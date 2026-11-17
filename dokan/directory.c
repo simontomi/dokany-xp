@@ -373,8 +373,9 @@ DokanFillDirectoryInformation(FILE_INFORMATION_CLASS DirectoryInfo,
 
 int WINAPI DokanFillFileData(PWIN32_FIND_DATAW FindData,
                              PDOKAN_FILE_INFO FileInfo) {
+  PDOKAN_VECTOR dirList;
   assert(FileInfo->ProcessingContext);
-  PDOKAN_VECTOR dirList = (PDOKAN_VECTOR )FileInfo->ProcessingContext;
+  dirList = (PDOKAN_VECTOR )FileInfo->ProcessingContext;
   DokanVector_PushBack(dirList, FindData);
   return 0;
 }
@@ -383,6 +384,7 @@ int WINAPI DokanFillFileData(PWIN32_FIND_DATAW FindData,
 // to the buffer specifed in EventInfo
 //
 LONG MatchFiles(PDOKAN_IO_EVENT IoEvent, PDOKAN_VECTOR DirList) {
+  size_t i;
   ULONG lengthRemaining =
       IoEvent->EventContext->Operation.Directory.BufferLength;
   PVOID currentBuffer = IoEvent->EventResult->Buffer;
@@ -407,7 +409,7 @@ LONG MatchFiles(PDOKAN_IO_EVENT IoEvent, PDOKAN_VECTOR DirList) {
     patternCheck = TRUE;
   }
 
-  for (size_t i = 0; i < DokanVector_GetCount(DirList); ++i) {
+  for (i = 0; i < DokanVector_GetCount(DirList); ++i) {
     PDOKAN_FIND_DATA find = (PDOKAN_FIND_DATA)DokanVector_GetItem(DirList, i);
     DbgPrintW(L"FileMatch? : %s (%s,%d,%d)\n", find->FindData.cFileName,
               (pattern ? pattern : L"null"),
@@ -463,6 +465,7 @@ LONG MatchFiles(PDOKAN_IO_EVENT IoEvent, PDOKAN_VECTOR DirList) {
 }
 
 VOID AddMissingCurrentAndParentFolder(PDOKAN_IO_EVENT IoEvent) {
+  size_t i;
   PWCHAR pattern = NULL;
   BOOLEAN currentFolder = FALSE, parentFolder = FALSE;
   WIN32_FIND_DATAW findData;
@@ -483,7 +486,7 @@ VOID AddMissingCurrentAndParentFolder(PDOKAN_IO_EVENT IoEvent) {
     return;
   }
 
-  for (size_t i = 0;
+  for (i = 0;
        (!currentFolder || !parentFolder) && i < DokanVector_GetCount(dirList);
        ++i) {
     PDOKAN_FIND_DATA find = (PDOKAN_FIND_DATA)DokanVector_GetItem(dirList, i);
@@ -520,10 +523,11 @@ VOID AddMissingCurrentAndParentFolder(PDOKAN_IO_EVENT IoEvent) {
 
 NTSTATUS WriteDirectoryResults(PDOKAN_IO_EVENT EventInfo,
                                PDOKAN_VECTOR dirList) {
+  int index;
   // If this function is called then so far everything should be good
   assert(EventInfo->EventResult->Status == STATUS_SUCCESS);
   // Write the file info to the output buffer
-  int index = MatchFiles(EventInfo, dirList);
+  index = MatchFiles(EventInfo, dirList);
   DbgPrint("WriteDirectoryResults() New directory index is %d.\n", index);
   // there is no matched file
   if (index < 0) {
@@ -765,6 +769,7 @@ BOOL DOKANAPI DokanIsNameInExpression(LPCWSTR Expression, // matching pattern
       }
 
     } else if (Expression[ei] == DOS_STAR) {
+      BOOL endReached;
 
       ULONG p = ni;
       ULONG lastDot = 0;
@@ -776,7 +781,7 @@ BOOL DOKANAPI DokanIsNameInExpression(LPCWSTR Expression, // matching pattern
         p++;
       }
 
-      BOOL endReached = FALSE;
+      endReached = FALSE;
       while (!endReached) {
 
         endReached = (Name[ni] == '\0' || ni == lastDot);

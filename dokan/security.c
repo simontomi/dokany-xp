@@ -32,6 +32,10 @@ NTSTATUS DefaultGetFileSecurity(LPCWSTR FileName,
                                 PSECURITY_DESCRIPTOR SecurityDescriptor,
                                 ULONG BufferLength, PULONG LengthNeeded,
                                 PDOKAN_FILE_INFO DokanFileInfo) {
+  DWORD returnLength;
+  PSECURITY_DESCRIPTOR SecurityDescriptorTmp;
+  ULONG Size;
+  LPTSTR pStringBuffer;
   WCHAR buffer[1024];
   WCHAR finalBuffer[2048];
   PTOKEN_USER userToken = NULL;
@@ -47,7 +51,6 @@ NTSTATUS DefaultGetFileSecurity(LPCWSTR FileName,
     return STATUS_NOT_IMPLEMENTED;
   }
 
-  DWORD returnLength;
   if (!GetTokenInformation(tokenHandle, TokenUser, buffer, sizeof(buffer),
                            &returnLength)) {
     DbgPrint("  GetTokenInformation failed: %d\n", GetLastError());
@@ -91,14 +94,14 @@ NTSTATUS DefaultGetFileSecurity(LPCWSTR FileName,
     swprintf_s(finalBuffer, 2048, L"%lsD:AI(A;ID;FA;;;AU)", buffer);
   }
 
-  PSECURITY_DESCRIPTOR SecurityDescriptorTmp = NULL;
-  ULONG Size = 0;
+  SecurityDescriptorTmp = NULL;
+  Size = 0;
   if (!ConvertStringSecurityDescriptorToSecurityDescriptor(
           finalBuffer, SDDL_REVISION_1, &SecurityDescriptorTmp, &Size)) {
     return STATUS_NOT_IMPLEMENTED;
   }
 
-  LPTSTR pStringBuffer = NULL;
+  pStringBuffer = NULL;
   if (!ConvertSecurityDescriptorToStringSecurityDescriptor(
           SecurityDescriptorTmp, SDDL_REVISION_1, *SecurityInformation,
           &pStringBuffer, NULL)) {

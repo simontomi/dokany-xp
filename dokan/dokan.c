@@ -55,9 +55,10 @@ VOID DOKANAPI DokanUseStdErr(BOOL Status) { g_UseStdErr = Status; }
 VOID DOKANAPI DokanDebugMode(BOOL Status) { g_DebugMode = Status; }
 
 VOID DispatchDriverLogs(PDOKAN_IO_EVENT IoEvent) {
+  PDOKAN_LOG_MESSAGE log_message;
   UNREFERENCED_PARAMETER(IoEvent);
 
-  PDOKAN_LOG_MESSAGE log_message =
+  log_message =
       (PDOKAN_LOG_MESSAGE)((PCHAR)IoEvent->EventContext +
                            sizeof(EVENT_CONTEXT));
   if (log_message->MessageLength) {
@@ -192,6 +193,7 @@ BOOL IsValidDriveLetter(WCHAR DriveLetter) {
 }
 
 BOOL CheckDriveLetterAvailability(WCHAR DriveLetter) {
+  DWORD drives;
   DWORD result = 0;
   WCHAR buffer[MAX_PATH];
   WCHAR dosDevice[] = L"\\\\.\\C:";
@@ -229,7 +231,7 @@ BOOL CheckDriveLetterAvailability(WCHAR DriveLetter) {
     return FALSE;
   }
 
-  DWORD drives = GetLogicalDrives();
+  drives = GetLogicalDrives();
   result = (drives >> (DWORD)(driveLetter - L'A') & 0x00000001);
   if (result > 0) {
     DbgPrintW(L"CheckDriveLetterAvailability failed, GetLogicalDrives - Drive "
@@ -488,16 +490,24 @@ DWORD SendAndPullEventInformation(PDOKAN_IO_EVENT IoEvent,
 
 VOID CALLBACK DispatchBatchIoCallback(PTP_CALLBACK_INSTANCE Instance, PVOID Parameter,
                                PTP_WORK Work) {
+  PDOKAN_IO_EVENT ioEvent;
+  PDOKAN_INSTANCE dokanInstance;
+  PDOKAN_IO_BATCH ioBatch;
+  BOOL mainPullThread;
   UNREFERENCED_PARAMETER(Instance);
   UNREFERENCED_PARAMETER(Work);
 
-  PDOKAN_IO_EVENT ioEvent = (PDOKAN_IO_EVENT)Parameter;
+  ioEvent = (PDOKAN_IO_EVENT)Parameter;
   assert(ioEvent);
-  PDOKAN_INSTANCE dokanInstance = ioEvent->DokanInstance;
-  PDOKAN_IO_BATCH ioBatch = NULL;
-  BOOL mainPullThread = ioEvent->EventContext == NULL;
+  dokanInstance = ioEvent->DokanInstance;
+  ioBatch = NULL;
+  mainPullThread = ioEvent->EventContext == NULL;
 
   while (TRUE) {
+    DWORD error;
+    PEVENT_CONTEXT context;
+    ULONG_PTR currentNumberOfBytesTransferred;
+    LONG eventContextBatchCount;
     // 6 - Process events coming from:
     // - Last event not dispatched to the pool (see bottom of this fct).
     // - New pool thread that just started with a dispatched event.
@@ -522,7 +532,7 @@ VOID CALLBACK DispatchBatchIoCallback(PTP_CALLBACK_INSTANCE Instance, PVOID Para
     ioBatch->DokanInstance = dokanInstance;
 
     // 1 - Send event result and pull new events.
-    DWORD error = SendAndPullEventInformation(ioEvent, ioBatch, /*ReleaseBatchBuffers=*/TRUE);
+    error = SendAndPullEventInformation(ioEvent, ioBatch, /*ReleaseBatchBuffers=*/TRUE);
     if (error) {
       HandleProcessIoFatalError(dokanInstance, ioBatch, error);
       return;
@@ -538,8 +548,8 @@ VOID CALLBACK DispatchBatchIoCallback(PTP_CALLBACK_INSTANCE Instance, PVOID Para
       return;
     }
 
-    PEVENT_CONTEXT context = ioBatch->EventContext;
-    ULONG_PTR currentNumberOfBytesTransferred =
+    context = ioBatch->EventContext;
+    currentNumberOfBytesTransferred =
         ioBatch->NumberOfBytesTransferred;
     while (currentNumberOfBytesTransferred) {
       ++ioBatch->EventContextBatchCount;
@@ -548,7 +558,7 @@ VOID CALLBACK DispatchBatchIoCallback(PTP_CALLBACK_INSTANCE Instance, PVOID Para
     }
     // 3 - Dispatch Events
     context = ioBatch->EventContext;
-    LONG eventContextBatchCount = ioBatch->EventContextBatchCount;
+    eventContextBatchCount = ioBatch->EventContextBatchCount;
     while (eventContextBatchCount) {
       ioEvent = PopIoEventBuffer();
       if (!ioEvent) {
@@ -573,12 +583,14 @@ VOID CALLBACK DispatchBatchIoCallback(PTP_CALLBACK_INSTANCE Instance, PVOID Para
 
 VOID CALLBACK DispatchDedicatedIoCallback(PTP_CALLBACK_INSTANCE Instance,
                                           PVOID Parameter, PTP_WORK Work) {
+  PDOKAN_IO_EVENT ioEvent;
+  PDOKAN_IO_BATCH ioBatch;
   UNREFERENCED_PARAMETER(Instance);
   UNREFERENCED_PARAMETER(Work);
 
-  PDOKAN_IO_EVENT ioEvent = (PDOKAN_IO_EVENT)Parameter;
+  ioEvent = (PDOKAN_IO_EVENT)Parameter;
   assert(ioEvent);
-  PDOKAN_IO_BATCH ioBatch = PopIoBatchBuffer();
+  ioBatch = PopIoBatchBuffer();
   ioBatch->MainPullThread = TRUE;
   ioBatch->DokanInstance = ioEvent->DokanInstance;
   ioEvent->EventContext = ioBatch->EventContext;
@@ -674,6 +686,14 @@ int DOKANAPI DokanMain(PDOKAN_OPTIONS DokanOptions,
 int DOKANAPI DokanCreateFileSystem(_In_ PDOKAN_OPTIONS DokanOptions,
                                    _In_ PDOKAN_OPERATIONS DokanOperations,
                                    _Out_ DOKAN_HANDLE *DokanInstance) {
+  int result;
+  DWORD_PTR processAffinityMask;
+  DWORD_PTR systemAffinityMask;
+  DWORD mainPullThreadCount;
+  BOOLEAN allowIpcBatching;
+  DWORD x;
+  wchar_t keepalive_path[128];
+  wchar_t notify_path[128];
   PDOKAN_INSTANCE dokanInstance;
   WCHAR rawDeviceName[MAX_PATH];
 
@@ -687,6 +707,16 @@ int DOKANAPI DokanCreateFileSystem(_In_ PDOKAN_OPTIONS DokanOptions,
 
   g_DebugMode = DokanOptions->Options & DOKAN_OPTION_DEBUG;
   g_UseStdErr = DokanOptions->Options & DOKAN_OPTION_STDERR;
+#ifdef DOKAN_XP_COMPAT
+  // XP port diagnostics: with the environment variable DOKAN_DEBUG set, the
+  // library writes its debug output to stderr for any host program, and the
+  // driver forwards its own log of the mount to it.
+  if (GetEnvironmentVariableW(L"DOKAN_DEBUG", NULL, 0) > 0) {
+    g_DebugMode = TRUE;
+    g_UseStdErr = TRUE;
+    DokanOptions->Options |= DOKAN_OPTION_DISPATCH_DRIVER_LOGS;
+  }
+#endif
 
   if (g_DebugMode) {
     DbgPrintW(L"Dokan: debug mode on\n");
@@ -766,7 +796,7 @@ int DOKANAPI DokanCreateFileSystem(_In_ PDOKAN_OPTIONS DokanOptions,
              DokanOptions->UNCName);
   }
 
-  int result = DokanStart(dokanInstance);
+  result = DokanStart(dokanInstance);
   if (result != DOKAN_SUCCESS) {
     DeleteDokanInstance(dokanInstance);
     return result;
@@ -790,9 +820,7 @@ int DOKANAPI DokanCreateFileSystem(_In_ PDOKAN_OPTIONS DokanOptions,
     return DOKAN_DRIVER_INSTALL_ERROR;
   }
 
-  DWORD_PTR processAffinityMask;
-  DWORD_PTR systemAffinityMask;
-  DWORD mainPullThreadCount = 0;
+  mainPullThreadCount = 0;
   if (GetProcessAffinityMask(GetCurrentProcess(), &processAffinityMask,
                              &systemAffinityMask)) {
     while (processAffinityMask) {
@@ -813,11 +841,11 @@ int DOKANAPI DokanCreateFileSystem(_In_ PDOKAN_OPTIONS DokanOptions,
     DokanOptions->Options |= DOKAN_OPTION_ALLOW_IPC_BATCHING;
     mainPullThreadCount = DOKAN_MAIN_PULL_THREAD_COUNT_MAX;
   }
-  BOOLEAN allowIpcBatching =
+  allowIpcBatching =
       (BOOLEAN)(DokanOptions->Options & DOKAN_OPTION_ALLOW_IPC_BATCHING);
   DbgPrintW(L"Dokan: Using %d main pull threads with ipc batching: %d\n",
             mainPullThreadCount, allowIpcBatching);
-  for (DWORD x = 0; x < mainPullThreadCount; ++x) {
+  for (x = 0; x < mainPullThreadCount; ++x) {
     PDOKAN_IO_EVENT ioEvent = PopIoEventBuffer();
     if (!ioEvent) {
       DokanDbgPrintW(L"Dokan Error: IoEvent allocation failed.");
@@ -829,6 +857,17 @@ int DOKANAPI DokanCreateFileSystem(_In_ PDOKAN_OPTIONS DokanOptions,
                               ? DispatchBatchIoCallback
                               : DispatchDedicatedIoCallback);
   }
+#if defined(DOKAN_XP_COMPAT) && (_WIN32_WINNT < 0x0600)
+  // The driver serves a volume only once a pull thread has asked it for work
+  // (HasEventWait); an open before that, also one of the host process right
+  // after DokanCreateFileSystem returns, gets a handle the driver cannot use
+  // (STATUS_INVALID_PARAMETER at the first request on it). The Vista pool runs
+  // the pull threads at once on threads it has ready; with the XP pool, wait
+  // until every pull thread has been taken by a thread, then let them reach
+  // the driver before the mount is reported.
+  DokanXpThreadpoolWaitQueueTaken(GetThreadPool(), 5000);
+  Sleep(50);
+#endif
 
   if (!DokanMount(dokanInstance, DokanOptions)) {
     SendReleaseIRP(dokanInstance->DeviceName);
@@ -837,7 +876,6 @@ int DOKANAPI DokanCreateFileSystem(_In_ PDOKAN_OPTIONS DokanOptions,
     return DOKAN_MOUNT_ERROR;
   }
 
-  wchar_t keepalive_path[128];
   StringCbPrintfW(keepalive_path, sizeof(keepalive_path), L"\\\\?%s%s",
                   dokanInstance->DeviceName, DOKAN_KEEPALIVE_FILE_NAME);
   dokanInstance->KeepaliveHandle =
@@ -854,7 +892,6 @@ int DOKANAPI DokanCreateFileSystem(_In_ PDOKAN_OPTIONS DokanOptions,
       DbgPrintW(L"Failed to activate keepalive handle.\n");
   }
 
-  wchar_t notify_path[128];
   StringCbPrintfW(notify_path, sizeof(notify_path), L"\\\\?%s%s",
                   dokanInstance->DeviceName, DOKAN_NOTIFICATION_FILE_NAME);
   dokanInstance->NotifyHandle = CreateFile(
@@ -979,6 +1016,7 @@ VOID CreateDispatchCommon(PDOKAN_IO_EVENT IoEvent, ULONG SizeOfEventInfo, BOOL U
 }
 
 VOID ReleaseDokanOpenInfo(PDOKAN_IO_EVENT IoEvent) {
+  LPWSTR fileNameForClose;
   if (!IoEvent->DokanOpenInfo) {
     return;
   }
@@ -998,7 +1036,7 @@ VOID ReleaseDokanOpenInfo(PDOKAN_IO_EVENT IoEvent) {
   }
 
   // Process close event as OpenCount is now 0
-  LPWSTR fileNameForClose = NULL;
+  fileNameForClose = NULL;
   if (IoEvent->DokanOpenInfo->CloseFileName) {
     fileNameForClose = IoEvent->DokanOpenInfo->CloseFileName;
     IoEvent->DokanOpenInfo->CloseFileName = NULL;
@@ -1286,8 +1324,9 @@ PDOKAN_MOUNT_POINT_INFO DOKANAPI DokanGetMountPointList(BOOL uncOnly,
   *nbRead = returnedLength / sizeof(DOKAN_MOUNT_POINT_INFO);
   results = malloc(returnedLength);
   if (results != NULL) {
+    ULONG i;
     ZeroMemory(results, returnedLength);
-    for (ULONG i = 0; i < *nbRead; ++i) {
+    for (i = 0; i < *nbRead; ++i) {
       if (!uncOnly || wcscmp(dokanMountPointInfo[i].UNCName, L"") != 0)
         CopyMemory(&results[i], &dokanMountPointInfo[i],
                    sizeof(DOKAN_MOUNT_POINT_INFO));
@@ -1411,12 +1450,13 @@ VOID DOKANAPI DokanMapKernelToUserCreateFileFlags(
 }
 
 VOID DOKANAPI DokanInit() {
+  LONG initRefCount;
   // ensure 64-bit alignment
   assert(FIELD_OFFSET(EVENT_INFORMATION, Buffer) % 8 == 0);
 
   // this is not as safe as a critical section so to some degree we rely on
   // the user to do the right thing
-  LONG initRefCount = InterlockedIncrement(&g_DokanInitialized);
+  initRefCount = InterlockedIncrement(&g_DokanInitialized);
   if (initRefCount <= 0) {
     RaiseException(DOKAN_EXCEPTION_INITIALIZATION_FAILED,
                    EXCEPTION_NONCONTINUABLE, 0, NULL);
@@ -1463,21 +1503,24 @@ VOID DOKANAPI DokanShutdown() {
 BOOL DOKANAPI DokanNotifyPath(_In_ DOKAN_HANDLE DokanInstance,
                               _In_ LPCWSTR FilePath,
                               _In_ ULONG CompletionFilter, _In_ ULONG Action) {
+  size_t length;
+  ULONG returnedLength;
+  ULONG inputLength;
+  PDOKAN_NOTIFY_PATH_INTERMEDIATE pNotifyPath;
   DOKAN_INSTANCE *instance = (DOKAN_INSTANCE *)DokanInstance;
+  const size_t prefixSize = 2; // size of mount letter plus ":"
   if (FilePath == NULL || !instance || !instance->NotifyHandle) {
     return FALSE;
   }
-  size_t length = wcslen(FilePath);
-  const size_t prefixSize = 2; // size of mount letter plus ":"
+  length = wcslen(FilePath);
   if (length <= prefixSize) {
     return FALSE;
   }
   // remove the mount letter and colon from length, for example: "G:"
   length -= prefixSize;
-  ULONG returnedLength;
-  ULONG inputLength = (ULONG)(sizeof(DOKAN_NOTIFY_PATH_INTERMEDIATE) +
+  inputLength = (ULONG)(sizeof(DOKAN_NOTIFY_PATH_INTERMEDIATE) +
                               (length * sizeof(WCHAR)));
-  PDOKAN_NOTIFY_PATH_INTERMEDIATE pNotifyPath = malloc(inputLength);
+  pNotifyPath = malloc(inputLength);
   if (pNotifyPath == NULL) {
     DbgPrint("Failed to allocate NotifyPath\n");
     return FALSE;

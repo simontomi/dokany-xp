@@ -31,12 +31,13 @@ BOOL DokanVector_Grow(PDOKAN_VECTOR Vector, size_t MinimumIncrease);
 
 // Creates a new instance of DOKAN_VECTOR with default values.
 PDOKAN_VECTOR DokanVector_Alloc(size_t ItemSize) {
+  PDOKAN_VECTOR vector;
   assert(ItemSize > 0);
   if (ItemSize == 0) {
     DbgPrintW(L"Cannot allocate a DOKAN_VECTOR with an ItemSize of 0.\n");
     return NULL;
   }
-  PDOKAN_VECTOR vector = (PDOKAN_VECTOR)malloc(sizeof(DOKAN_VECTOR));
+  vector = (PDOKAN_VECTOR)malloc(sizeof(DOKAN_VECTOR));
   if (!vector) {
     DbgPrintW(L"DOKAN_VECTOR allocation failed.\n");
     return NULL;
@@ -56,12 +57,13 @@ PDOKAN_VECTOR DokanVector_Alloc(size_t ItemSize) {
 
 // Creates a new instance of DOKAN_VECTOR with default values.
 PDOKAN_VECTOR DokanVector_AllocWithCapacity(size_t ItemSize, size_t MaxItems) {
+  PDOKAN_VECTOR vector;
   assert(ItemSize > 0);
   if (ItemSize == 0) {
     DbgPrintW(L"Cannot allocate a DOKAN_VECTOR with an ItemSize of 0.\n");
     return NULL;
   }
-  PDOKAN_VECTOR vector = (PDOKAN_VECTOR)malloc(sizeof(DOKAN_VECTOR));
+  vector = (PDOKAN_VECTOR)malloc(sizeof(DOKAN_VECTOR));
   if (!vector) {
     DbgPrintW(L"DOKAN_VECTOR allocation failed.\n");
     return NULL;
@@ -194,6 +196,8 @@ PVOID DokanVector_GetLastItem(PDOKAN_VECTOR Vector) {
 
 // Increases the internal capacity of the vector.
 BOOL DokanVector_Grow(PDOKAN_VECTOR Vector, size_t MinimumIncrease) {
+  size_t newSize;
+  PVOID newItems;
   if (MinimumIncrease == 0 && Vector->MaxItems == 0) {
     Vector->Items = malloc(Vector->ItemSize * DEFAULT_ITEM_COUNT);
     if (!Vector->Items) {
@@ -203,14 +207,14 @@ BOOL DokanVector_Grow(PDOKAN_VECTOR Vector, size_t MinimumIncrease) {
     Vector->MaxItems = DEFAULT_ITEM_COUNT;
     return TRUE;
   }
-  size_t newSize = Vector->MaxItems * 2;
+  newSize = Vector->MaxItems * 2;
   if (newSize < DEFAULT_ITEM_COUNT) {
     newSize = DEFAULT_ITEM_COUNT;
   }
   if (newSize <= Vector->MaxItems + MinimumIncrease) {
     newSize = Vector->MaxItems + MinimumIncrease + MinimumIncrease;
   }
-  PVOID newItems = realloc(Vector->Items, newSize * Vector->ItemSize);
+  newItems = realloc(Vector->Items, newSize * Vector->ItemSize);
   if (newItems) {
     Vector->Items = newItems;
     Vector->MaxItems = newSize;

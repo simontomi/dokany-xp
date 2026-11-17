@@ -189,10 +189,11 @@ VOID DeleteDeviceDelayed(PDOKAN_GLOBAL dokanGlobal) {
 
     deviceEntry = CONTAINING_RECORD(entry, DEVICE_ENTRY, ListEntry);
     if (deviceEntry) {
+      BOOLEAN canDeleteDiskDevice;
       DOKAN_LOG_("There is a device for delayed delete. Counter %lu",
                 deviceEntry->Counter);
 
-      BOOLEAN canDeleteDiskDevice = FALSE;
+      canDeleteDiskDevice = FALSE;
       dcb = NULL;
       if (deviceEntry->DiskDeviceObject) {
         canDeleteDiskDevice =
@@ -348,13 +349,14 @@ execute DokanDeviceDeleteDelayedThread
 
 VOID RemoveMountEntry(__in PDOKAN_GLOBAL DokanGlobal,
                       __in PDOKAN_CONTROL DokanControl) {
+  PMOUNT_ENTRY mountEntry;
   ExAcquireResourceExclusiveLite(&DokanGlobal->MountPointListLock, TRUE);
 
   // We need to refetch the entry to get the correct locking order
   // but we call it with the mount entry list lock acquired so we can remove
   // and release its memory without having another thread waiting
   // on it in a concurrent FindMountEntry call.
-  PMOUNT_ENTRY mountEntry =
+  mountEntry =
       FindMountEntry(DokanGlobal, DokanControl, /*ExclusiveLock=*/TRUE);
   if (!mountEntry) {
     // Already removed
@@ -426,7 +428,11 @@ BOOLEAN IsDeletePending(__in PDEVICE_OBJECT DeviceObject) {
   }
 
   if (DeviceObject->DeviceObjectExtension &&
+#ifdef DOKAN_XP_COMPAT
+      DOKAN_XP_EXTENSION_FLAGS(DeviceObject->DeviceObjectExtension) &
+#else
       DeviceObject->DeviceObjectExtension->ExtensionFlags &
+#endif
           (DOE_UNLOAD_PENDING | DOE_DELETE_PENDING | DOE_REMOVE_PENDING |
            DOE_REMOVE_PROCESSED)) {
     DOKAN_LOG("This device is deleted");
@@ -551,11 +557,12 @@ PMOUNT_ENTRY FindMountEntryByName(__in PDOKAN_GLOBAL DokanGlobal,
                                   __in PUNICODE_STRING DiskDeviceName,
                                   __in PUNICODE_STRING UNCName,
                                   __in BOOLEAN ExclusiveLock) {
+  PDOKAN_CONTROL dokanControl;
   PMOUNT_ENTRY mountEntry = NULL;
   if (DiskDeviceName == NULL) {
     return NULL;
   }
-  PDOKAN_CONTROL dokanControl = DokanAllocZero(sizeof(DOKAN_CONTROL));
+  dokanControl = DokanAllocZero(sizeof(DOKAN_CONTROL));
   if (dokanControl == NULL) {
     return NULL;
   }
@@ -842,13 +849,14 @@ VOID DokanCreateMountPoint(__in PDokanDCB Dcb) {
 }
 
 BOOLEAN DeleteMountPointSymbolicLink(__in PUNICODE_STRING MountPoint) {
+  NTSTATUS status;
   if (MountPoint == NULL || MountPoint->Length <= 0) {
     DOKAN_LOG("Mount Point is null");
     return FALSE;
   }
 
   DOKAN_LOG_("Delete Mount Point Symbolic Name: %wZ", MountPoint);
-  NTSTATUS status = IoDeleteSymbolicLink(MountPoint);
+  status = IoDeleteSymbolicLink(MountPoint);
   if (!NT_SUCCESS(status)) {
     DOKAN_LOG_("Delete Mount Point failed Symbolic Name: %wZ %s", MountPoint,
                DokanGetNTSTATUSStr(status));
@@ -1183,6 +1191,7 @@ DokanCreateDiskDevice(__in PDRIVER_OBJECT DriverObject, __in ULONG MountId,
 
 VOID DokanDeleteDeviceObject(__in_opt PREQUEST_CONTEXT RequestContext,
                              __in PDokanDCB Dcb) {
+  PDEVICE_OBJECT volumeDeviceObject;
   PDokanVCB vcb;
   DOKAN_CONTROL dokanControl;
   PMOUNT_ENTRY mountEntry = NULL;
@@ -1238,7 +1247,7 @@ VOID DokanDeleteDeviceObject(__in_opt PREQUEST_CONTEXT RequestContext,
     RtlInitUnicodeString(&Dcb->DiskDeviceInterfaceName, NULL);
   }
 
-  PDEVICE_OBJECT volumeDeviceObject = NULL;
+  volumeDeviceObject = NULL;
 
   if (vcb != NULL) {
     DOKAN_LOG_FINE_IRP(RequestContext, "FCB allocated: %d", vcb->FcbAllocated);

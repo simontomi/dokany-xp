@@ -163,6 +163,9 @@ BOOLEAN AppendVarSizeOutputString(_Inout_ PIRP Irp, _Inout_ PVOID Dest,
                                   _In_ const UNICODE_STRING* Str,
                                   _In_ BOOLEAN UpdateInformationOnFailure,
                                   _In_ BOOLEAN FillSpaceWithPartialString) {
+  ULONG_PTR destOffset;
+  ULONG_PTR remainingSize;
+  ULONG_PTR copySize;
   PCHAR buffer = GetOutputBuffer(Irp);
   ULONG_PTR allocatedSize = Irp->IoStatus.Information;
   if ((PCHAR)Dest < buffer || (PCHAR)Dest > buffer + allocatedSize) {
@@ -172,9 +175,9 @@ BOOLEAN AppendVarSizeOutputString(_Inout_ PIRP Irp, _Inout_ PVOID Dest,
   if (Str->Length == 0) {
     return TRUE;
   }
-  ULONG_PTR destOffset = (PCHAR)Dest - buffer;
-  ULONG_PTR remainingSize = allocatedSize - destOffset;
-  ULONG_PTR copySize = Str->Length;
+  destOffset = (PCHAR)Dest - buffer;
+  remainingSize = allocatedSize - destOffset;
+  copySize = Str->Length;
   if (remainingSize < copySize) {
     ULONG additionalSize = (ULONG)(copySize - remainingSize);
     if (!ExtendOutputBufferBySize(Irp, additionalSize,

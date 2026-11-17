@@ -506,11 +506,15 @@ VOID PushDokanLogEntry(_In_opt_ PVOID RequestContext, _In_ PCSTR Format, ...) {
   }
 
   __try {
+    PSTR ppszDestEnd;
+    va_list args;
+    NTSTATUS status;
     DokanResourceLockRW(&(g_DokanLogEntryList.Resource));
     if (g_DokanLogEntryList.NumberOfCachedEntries >=
         DOKAN_LOG_MAX_ENTRY_CACHED) {
+      PLIST_ENTRY listEntry;
       ASSERT(!IsListEmpty(&g_DokanLogEntryList.Log));
-      PLIST_ENTRY listEntry = g_DokanLogEntryList.Log.Flink;
+      listEntry = g_DokanLogEntryList.Log.Flink;
       RemoveEntryList(listEntry);
       logEntry = CONTAINING_RECORD(listEntry, DOKAN_LOG_ENTRY, ListEntry);
       ExFreePool(logEntry);
@@ -528,10 +532,9 @@ VOID PushDokanLogEntry(_In_opt_ PVOID RequestContext, _In_ PCSTR Format, ...) {
       logEntry->Vcb = requestContext->Vcb;
     }
 
-    PSTR ppszDestEnd = NULL;
-    va_list args;
+    ppszDestEnd = NULL;
     va_start(args, Format);
-    NTSTATUS status =
+    status =
         RtlStringCchVPrintfExA(logEntry->Log.Message, DOKAN_LOG_MAX_CHAR_COUNT,
                                &ppszDestEnd, NULL, 0, Format, args);
     logEntry->Log.MessageLength = (ULONG)(ppszDestEnd - logEntry->Log.Message);
@@ -566,6 +569,7 @@ VOID PopDokanLogEntry(_In_opt_ PVOID RequestContext, _In_ PDokanVCB Vcb) {
 
   listEntry = g_DokanLogEntryList.Log.Flink;
   while (listEntry != &(g_DokanLogEntryList.Log)) {
+    PEVENT_CONTEXT eventContext;
     logEntry = CONTAINING_RECORD(listEntry, DOKAN_LOG_ENTRY, ListEntry);
 
     // Only Pop global and the Vcb logs.
@@ -576,7 +580,7 @@ VOID PopDokanLogEntry(_In_opt_ PVOID RequestContext, _In_ PDokanVCB Vcb) {
 
     messageFullSize = logEntry->Log.MessageLength +
                       FIELD_OFFSET(DOKAN_LOG_MESSAGE, Message[0]);
-    PEVENT_CONTEXT eventContext =
+    eventContext =
         AllocateEventContextRaw(sizeof(EVENT_CONTEXT) + messageFullSize);
     if (!eventContext) {
       return;

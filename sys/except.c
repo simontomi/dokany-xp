@@ -24,11 +24,12 @@ with this program. If not, see <http://www.gnu.org/licenses/>.
 
 NTSTATUS
 DokanExceptionFilter(__in PIRP Irp, __in PEXCEPTION_POINTERS ExceptionPointer) {
-  UNREFERENCED_PARAMETER(Irp);
-
-  NTSTATUS status = EXCEPTION_CONTINUE_SEARCH;
+  NTSTATUS status;
   NTSTATUS exceptionCode;
   PEXCEPTION_RECORD exceptRecord;
+  UNREFERENCED_PARAMETER(Irp);
+
+  status = EXCEPTION_CONTINUE_SEARCH;
 
   exceptRecord = ExceptionPointer->ExceptionRecord;
   exceptionCode = exceptRecord->ExceptionCode;

@@ -30,6 +30,7 @@ const UNICODE_STRING g_ObjectManagerPrefix =
 
 PUNICODE_STRING
 DokanAllocateUnicodeString(__in PCWSTR String) {
+  NTSTATUS result;
   PUNICODE_STRING unicode;
   PWSTR buffer;
   ULONG length;
@@ -45,7 +46,7 @@ DokanAllocateUnicodeString(__in PCWSTR String) {
     return NULL;
   }
   RtlCopyMemory(buffer, String, length);
-  NTSTATUS result = RtlUnicodeStringInitEx(unicode, buffer, 0);
+  result = RtlUnicodeStringInitEx(unicode, buffer, 0);
   if (!NT_SUCCESS(result)) {
     DOKAN_LOG("Invalid string size received.");
     ExFreePool(buffer);
@@ -93,6 +94,7 @@ BOOLEAN DokanDuplicateUnicodeString(__out PUNICODE_STRING Dest,
 
 BOOLEAN StartsWith(__in const UNICODE_STRING* Str,
                    __in const UNICODE_STRING* Prefix) {
+  LPCWSTR prefixToUse, stringToCompareTo;
   if (Prefix == NULL || Prefix->Length == 0) {
     return TRUE;
   }
@@ -101,7 +103,6 @@ BOOLEAN StartsWith(__in const UNICODE_STRING* Str,
     return FALSE;
   }
 
-  LPCWSTR prefixToUse, stringToCompareTo;
   prefixToUse = Prefix->Buffer;
   stringToCompareTo = Str->Buffer;
 
@@ -124,6 +125,8 @@ BOOLEAN StartsWithVolumeGuidPrefix(__in const UNICODE_STRING* Str) {
 PUNICODE_STRING ChangePrefix(const UNICODE_STRING* Str,
                              const UNICODE_STRING* Prefix, BOOLEAN HasPrefix,
                              const UNICODE_STRING* NewPrefix) {
+  USHORT length;
+  UNICODE_STRING strAfterPrefix;
   PUNICODE_STRING newStr = NULL;
   BOOLEAN startWithPrefix = FALSE;
   USHORT prefixLength = 0;
@@ -134,7 +137,7 @@ PUNICODE_STRING ChangePrefix(const UNICODE_STRING* Str,
     return NULL;
   }
 
-  USHORT length = Str->Length + NewPrefix->Length;
+  length = Str->Length + NewPrefix->Length;
   if (startWithPrefix) {
     prefixLength = Prefix->Length;
     length -= Prefix->Length;
@@ -154,7 +157,7 @@ PUNICODE_STRING ChangePrefix(const UNICODE_STRING* Str,
   }
 
   RtlUnicodeStringCopy(newStr, NewPrefix);
-  UNICODE_STRING strAfterPrefix = DokanWrapUnicodeString(
+  strAfterPrefix = DokanWrapUnicodeString(
       (PWCHAR)((PCHAR)Str->Buffer + prefixLength), Str->Length - prefixLength);
   RtlUnicodeStringCat(newStr, &strAfterPrefix);
   return newStr;
@@ -208,7 +211,8 @@ LONG DokanSearchUnicodeStringChar(__in PUNICODE_STRING UnicodeString,
 
 LONG DokanSearchStringChar(__in PWCHAR String, __in ULONG Length,
                            __in WCHAR Char) {
-  for (ULONG i = 0; i < Length / sizeof(WCHAR); ++i) {
+  ULONG i;
+  for (i = 0; i < Length / sizeof(WCHAR); ++i) {
     if (String[i] == Char) {
       return i;
     }

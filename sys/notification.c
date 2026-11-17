@@ -108,6 +108,7 @@ VOID DokanFreeEventContext(__in PEVENT_CONTEXT EventContext) {
 VOID DokanEventNotification(__in PREQUEST_CONTEXT RequestContext,
                             __in PIRP_LIST NotifyEvent,
                             __in PEVENT_CONTEXT EventContext) {
+  KIRQL oldIrql;
   PDRIVER_EVENT_CONTEXT driverEventContext =
       CONTAINING_RECORD(EventContext, DRIVER_EVENT_CONTEXT, EventContext);
 
@@ -115,7 +116,6 @@ VOID DokanEventNotification(__in PREQUEST_CONTEXT RequestContext,
 
   ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
 
-  KIRQL oldIrql;
   KeAcquireSpinLock(&NotifyEvent->ListLock, &oldIrql);
   InsertTailList(&NotifyEvent->ListHead, &driverEventContext->ListEntry);
   if (!KeReadStateQueue(&RequestContext->Dcb->NotifyIrpEventQueue)) {
@@ -294,8 +294,8 @@ VOID DokanStopEventNotificationThread(__in PDokanDCB Dcb) {
 }
 
 VOID DokanCleanupAllChangeNotificationWaiters(__in PDokanVCB Vcb) {
-  DokanVCBLockRW(Vcb);
   DOKAN_INIT_LOGGER(logger, Vcb->Dcb->DeviceObject->DriverObject, 0);
+  DokanVCBLockRW(Vcb);
   DokanLogInfo(&logger, L"Cleaning up all change notification waiters.");
   FsRtlNotifyCleanupAll(Vcb->NotifySync, &Vcb->DirNotifyList);
   DokanVCBUnlock(Vcb);
@@ -402,6 +402,7 @@ ULONG GetCurrentSessionId(__in PREQUEST_CONTEXT RequestContext) {
 }
 
 NTSTATUS DokanGlobalEventRelease(__in PREQUEST_CONTEXT RequestContext) {
+  PDEVICE_OBJECT volumeDeviceObject;
   PDOKAN_UNICODE_STRING_INTERMEDIATE szMountPoint;
   DOKAN_CONTROL dokanControl;
   PMOUNT_ENTRY mountEntry;
@@ -435,7 +436,7 @@ NTSTATUS DokanGlobalEventRelease(__in PREQUEST_CONTEXT RequestContext) {
     return STATUS_BUFFER_TOO_SMALL;
   }
 
-  PDEVICE_OBJECT volumeDeviceObject = mountEntry->MountControl.VolumeDeviceObject;
+  volumeDeviceObject = mountEntry->MountControl.VolumeDeviceObject;
   ExReleaseResourceLite(&mountEntry->Resource);
 
   if (IsDeletePending(volumeDeviceObject)) {

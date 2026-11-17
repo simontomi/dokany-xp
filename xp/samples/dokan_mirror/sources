@@ -1,0 +1,21 @@
+# dokan_mirror.exe (the Dokany mirror sample) for Windows XP (x86) and Vista
+# (x64), built with the WDK 7.1 build.exe.
+TARGETNAME=dokan_mirror
+TARGETTYPE=PROGRAM
+UMTYPE=console
+UMENTRY=wmain
+USE_LIBCMT=1
+
+C_DEFINES=$(C_DEFINES) -DDOKAN_XP_COMPAT=1 -DUNICODE -D_UNICODE
+
+# Every source file gets the XP compatibility header first.
+USER_C_FLAGS=$(USER_C_FLAGS) /FI..\..\..\dokan\xp_compat.h
+
+INCLUDES=..\..\..\dokan;..\..\..\sys
+
+TARGETLIBS=$(SDK_LIB_PATH)\kernel32.lib \
+           $(SDK_LIB_PATH)\advapi32.lib \
+           $(SDK_LIB_PATH)\user32.lib \
+           ..\..\dokan\$(O)\dokan2.lib
+
+SOURCES=mirror.c

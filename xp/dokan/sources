@@ -1,0 +1,44 @@
+# dokan2.dll for Windows XP (x86, WXP target) and Vista (x64, WLH target), built
+# with the WDK 7.1 build.exe. The sources are wrappers that #include ..\..\dokan\*.c.
+TARGETNAME=dokan2
+TARGETTYPE=DYNLINK
+DLLDEF=..\..\dokan\dokan.def
+DLLENTRY=_DllMainCRTStartup
+UMTYPE=windows
+USE_LIBCMT=1
+
+C_DEFINES=$(C_DEFINES) -DDOKAN_XP_COMPAT=1 -DUNICODE -D_UNICODE -D_WINDLL -D_EXPORTING
+
+# Every source file gets the XP compatibility header first.
+USER_C_FLAGS=$(USER_C_FLAGS) /FI..\..\dokan\xp_compat.h
+
+INCLUDES=..\..\dokan;..\..\sys
+
+TARGETLIBS=$(SDK_LIB_PATH)\kernel32.lib \
+           $(SDK_LIB_PATH)\user32.lib \
+           $(SDK_LIB_PATH)\advapi32.lib \
+           $(SDK_LIB_PATH)\shell32.lib \
+           $(SDK_LIB_PATH)\ntdll.lib
+
+SOURCES=access.c \
+        cleanup.c \
+        close.c \
+        create.c \
+        directory.c \
+        dokan.c \
+        dokan_pool.c \
+        dokan_vector.c \
+        fileinfo.c \
+        flush.c \
+        lock.c \
+        mount.c \
+        ntstatus.c \
+        read.c \
+        security.c \
+        setfile.c \
+        timeout.c \
+        version.c \
+        volume.c \
+        write.c \
+        xp_threadpool.c \
+        dokan.rc

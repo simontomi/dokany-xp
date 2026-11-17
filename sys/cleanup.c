@@ -86,6 +86,9 @@ Return Value:
 
 --*/
 {
+  BOOLEAN deletePending;
+  BOOLEAN isDirectory;
+  BOOLEAN isUnmountPending;
   PFILE_OBJECT fileObject;
   PDokanCCB ccb = NULL;
   PDokanFCB fcb = NULL;
@@ -135,9 +138,9 @@ Return Value:
   }
   // The Fcb is marked for deletion due to DeleteOnClose or through
   // FileDisposition, the last handle will execute the deletion.
-  BOOLEAN deletePending =
+  deletePending =
       fcb->UncleanCount == 1 && DokanFCBIsPendingDeletion(fcb);
-  BOOLEAN isDirectory = DokanFCBFlagsIsSet(fcb, DOKAN_FILE_DIRECTORY);
+  isDirectory = DokanFCBFlagsIsSet(fcb, DOKAN_FILE_DIRECTORY);
   if (deletePending) {
     DokanNotifyReportChange(RequestContext, fcb,
                             isDirectory ? FILE_NOTIFY_CHANGE_DIR_NAME
@@ -150,12 +153,13 @@ Return Value:
   }
   DokanFCBUnlock(fcb);
 
-  BOOLEAN isUnmountPending = IsUnmountPendingVcb(RequestContext->Vcb);
+  isUnmountPending = IsUnmountPendingVcb(RequestContext->Vcb);
 
   OplockDebugRecordMajorFunction(fcb, IRP_MJ_CLEANUP);
   if (fcb->IsKeepalive) {
+    BOOLEAN shouldUnmount;
     DokanFCBLockRW(fcb);
-    BOOLEAN shouldUnmount = ccb->IsKeepaliveActive;
+    shouldUnmount = ccb->IsKeepaliveActive;
     if (shouldUnmount) {
       // Here we intentionally let the VCB-level flag stay set, because
       // there's no sense in having an opportunity for an "operation timeout

@@ -33,7 +33,11 @@ BEGIN
         BLOCK "000004e3"
         BEGIN
             VALUE "CompanyName", "Dokan Project"
+#ifdef DOKAN_XP_COMPAT
+            VALUE "FileDescription", "Dokan Driver (XP port)"
+#else
             VALUE "FileDescription", "Dokan Driver"
+#endif
             VALUE "FileVersion", "2.3.1.1000"
             VALUE "InternalName", "dokan.sys"
             VALUE "LegalCopyright", "Copyright (C) 2021"

@@ -109,13 +109,14 @@ VOID DokanReleaseForCreateSection(__in PFILE_OBJECT FileObject) {
 FAST_IO_ACQUIRE_FOR_CCFLUSH DokanAcquireForCcFlush;
 NTSTATUS DokanAcquireForCcFlush(__in PFILE_OBJECT FileObject,
                                 __in PDEVICE_OBJECT DeviceObject) {
+  PDokanCCB ccb;
   // This does the same locking that the FsRtlAcquireFileForCcFlushEx call
   // within CcFlushCache would be doing, if we did not bother implementing
   // this function. The only point of implementing it is because our specific
   // incantation for acquiring the same locks will get this instrumented when
   // enable lock debugging is on.
   UNREFERENCED_PARAMETER(DeviceObject);
-  PDokanCCB ccb = (PDokanCCB)FileObject->FsContext2;
+  ccb = (PDokanCCB)FileObject->FsContext2;
   if (ccb != NULL) {
     DokanPagingIoLockRO(ccb->Fcb);
     KeLeaveCriticalRegion();
@@ -126,9 +127,10 @@ NTSTATUS DokanAcquireForCcFlush(__in PFILE_OBJECT FileObject,
 FAST_IO_RELEASE_FOR_CCFLUSH DokanReleaseForCcFlush;
 NTSTATUS DokanReleaseForCcFlush(__in PFILE_OBJECT FileObject,
                                 __in PDEVICE_OBJECT DeviceObject) {
+  PDokanCCB ccb;
   // See the comment in DokanAcquireForCcFlush.
   UNREFERENCED_PARAMETER(DeviceObject);
-  PDokanCCB ccb = (PDokanCCB)FileObject->FsContext2;
+  ccb = (PDokanCCB)FileObject->FsContext2;
   if (ccb != NULL) {
     // The unlock calls below expect to be in their own critical region index.
     KeEnterCriticalRegion();
@@ -203,10 +205,10 @@ VOID InitMultiVersionResources() {
   ExInitializeDriverRuntime(DrvRtPoolNxOptIn);
 
   if (RtlIsNtDdiVersionAvailable(NTDDI_WIN8)) {
+    UNICODE_STRING SystemRoutineName;
 
     DokanMdlSafePriority = MdlMappingNoExecute;
 
-    UNICODE_STRING SystemRoutineName;
     RtlInitUnicodeString(&SystemRoutineName, L"FsRtlCheckLockForOplockRequest");
     DokanFsRtlCheckLockForOplockRequest =
         (DokanPtr_FsRtlCheckLockForOplockRequest *)MmGetSystemRoutineAddress(
@@ -790,8 +792,9 @@ VOID DokanResourceUnlockWithDebugInfo(
 }
 
 BOOLEAN DokanVCBTryLockRW(PDokanVCB Vcb) {
+  BOOLEAN result;
   KeEnterCriticalRegion();
-  BOOLEAN result = ExAcquireResourceExclusiveLite(&(Vcb)->Resource, FALSE);
+  result = ExAcquireResourceExclusiveLite(&(Vcb)->Resource, FALSE);
   if (!result) {
     KeLeaveCriticalRegion();
   }
@@ -863,13 +866,14 @@ void OplockDebugRecordAtomicRequest(PDokanFCB Fcb) {
 }
 
 VOID RunAsSystem(_In_ PKSTART_ROUTINE StartRoutine, PVOID StartContext) {
+  NTSTATUS status;
   HANDLE handle;
   PKTHREAD thread;
   OBJECT_ATTRIBUTES objectAttribs;
 
   InitializeObjectAttributes(&objectAttribs, NULL, OBJ_KERNEL_HANDLE, NULL,
                              NULL);
-  NTSTATUS status =
+  status =
       PsCreateSystemThread(&handle, THREAD_ALL_ACCESS, &objectAttribs, NULL,
                            NULL, StartRoutine, StartContext);
   if (!NT_SUCCESS(status)) {

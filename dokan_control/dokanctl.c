@@ -108,6 +108,7 @@ int DeleteDokanService(LPCWSTR ServiceName) {
        : L'\0')
 
 int __cdecl wmain(int argc, PWCHAR argv[]) {
+  WCHAR option;
   size_t i;
   WCHAR fileName[MAX_PATH];
   WCHAR driverFullPath[MAX_PATH] = {0};
@@ -133,7 +134,7 @@ int __cdecl wmain(int argc, PWCHAR argv[]) {
 
   fwprintf(stdout, L"Driver path: '%ls'\n", driverFullPath);
 
-  WCHAR option = GetOption(argc, argv, 1);
+  option = GetOption(argc, argv, 1);
   if (option == L'\0' || option == L'?') {
     return ShowUsage();
   }
@@ -189,11 +190,12 @@ int __cdecl wmain(int argc, PWCHAR argv[]) {
   }
 
   case L'd': {
+    ULONG mode;
     WCHAR type = towlower(argv[2][0]);
     if (L'0' > type || type > L'7')
       return DefaultCaseOption();
 
-    ULONG mode = type - L'0';
+    mode = type - L'0';
     if (DokanSetDebugMode(mode)) {
       fprintf(stdout, "set debug mode ok\n");
     } else {
@@ -211,6 +213,7 @@ int __cdecl wmain(int argc, PWCHAR argv[]) {
 
   // No admin rights required
   case L'l': {
+    ULONG p;
     ULONG nbRead = 0;
     PDOKAN_MOUNT_POINT_INFO dokanMountPointInfo =
         DokanGetMountPointList(FALSE, &nbRead);
@@ -220,7 +223,7 @@ int __cdecl wmain(int argc, PWCHAR argv[]) {
     }
 
     fwprintf(stdout, L"  Mount points: %lu\n", nbRead);
-    for (ULONG p = 0; p < nbRead; ++p)
+    for (p = 0; p < nbRead; ++p)
       fwprintf(stdout, L"  %lu# MountPoint: %ls - UNC: %ls - DeviceName: %ls\n",
                p, dokanMountPointInfo[p].MountPoint,
                dokanMountPointInfo[p].UNCName,

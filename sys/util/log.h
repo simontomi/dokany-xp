@@ -224,10 +224,17 @@ typedef struct _DOKAN_LOGGER {
 
 } DOKAN_LOGGER, *PDOKAN_LOGGER;
 
+#ifdef DOKAN_XP_COMPAT
+// C89 (WDK 7.1 compiler): one declaration, so that more declarations may
+// follow it (a non-constant aggregate initializer is a Microsoft extension).
+#define DOKAN_INIT_LOGGER(logger, driverObject, majorFunctionCode) \
+  DOKAN_LOGGER logger = {(driverObject), (UCHAR)(majorFunctionCode)}
+#else
 #define DOKAN_INIT_LOGGER(logger, driverObject, majorFunctionCode) \
   DOKAN_LOGGER logger;                                             \
   logger.DriverObject = driverObject;                              \
   logger.MajorFunctionCode = majorFunctionCode;
+#endif
 
 // Logs an error to the Windows event log, even in production, with the given
 // status, and returns the status passed in.

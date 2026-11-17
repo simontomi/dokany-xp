@@ -151,6 +151,8 @@ VOID DispatchCreate(PDOKAN_IO_EVENT IoEvent) {
     // DbgPrint("FILE_DIRECTORY_FILE\n");
     IoEvent->DokanFileInfo.IsDirectory = TRUE;
   } else if (IoEvent->EventContext->Flags & SL_OPEN_TARGET_DIRECTORY) {
+    WCHAR *lastP;
+    WCHAR *p;
     // NOTE: SL_OPEN_TARGET_DIRECTORY means open the parent directory of the
     // specified file
     // We pull out the parent directory name and then switch the flags to make
@@ -166,9 +168,9 @@ VOID DispatchCreate(PDOKAN_IO_EVENT IoEvent) {
     DbgPrint("SL_OPEN_TARGET_DIRECTORY specified\n");
 
     // strip the last section of the file path
-    WCHAR *lastP = NULL;
+    lastP = NULL;
 
-    for (WCHAR *p = fileName; *p; p++) {
+    for (p = fileName; *p; p++) {
       if ((*p == L'\\' || *p == L'/') && p[1])
         lastP = p;
     }
@@ -251,10 +253,13 @@ VOID DispatchCreate(PDOKAN_IO_EVENT IoEvent) {
         IoEvent->DokanInstance->DokanOperations->ZwCreateFile &&
         (IoEvent->EventContext->Operation.Create.SecurityContext.DesiredAccess &
          DELETE)) {
+      WCHAR *lastP;
+      WCHAR *p;
+      ACCESS_MASK newDesiredAccess;
       DbgPrint("Delete failed, ask parent folder if we have the right\n");
       // strip the last section of the file path
-      WCHAR *lastP = NULL;
-      for (WCHAR *p = fileName; *p; p++) {
+      lastP = NULL;
+      for (p = fileName; *p; p++) {
         if ((*p == L'\\' || *p == L'/') && p[1])
           lastP = p;
       }
@@ -263,7 +268,7 @@ VOID DispatchCreate(PDOKAN_IO_EVENT IoEvent) {
       }
 
       SetIOSecurityContext(IoEvent->EventContext, &ioSecurityContext);
-      ACCESS_MASK newDesiredAccess =
+      newDesiredAccess =
           (MAXIMUM_ALLOWED & ioSecurityContext.DesiredAccess)
               ? (FILE_DELETE_CHILD | FILE_LIST_DIRECTORY)
               : (((DELETE & ioSecurityContext.DesiredAccess) ? FILE_DELETE_CHILD

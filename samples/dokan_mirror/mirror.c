@@ -129,11 +129,17 @@ static void PrintUserName(PDOKAN_FILE_INFO DokanFileInfo) {
 }
 
 static BOOL AddSeSecurityNamePrivilege() {
+  DWORD err;
+  LUID luid;
+  LUID_AND_ATTRIBUTES attr;
+  TOKEN_PRIVILEGES priv;
+  TOKEN_PRIVILEGES oldPriv;
+  DWORD retSize;
+  BOOL privAlreadyPresent;
+  unsigned int i;
   HANDLE token = 0;
   DbgPrint(
            L"## Attempting to add SE_SECURITY_NAME privilege to process token ##\n");
-  DWORD err;
-  LUID luid;
   if (!LookupPrivilegeValue(0, SE_SECURITY_NAME, &luid)) {
     err = GetLastError();
     if (err != ERROR_SUCCESS) {
@@ -143,11 +149,9 @@ static BOOL AddSeSecurityNamePrivilege() {
     }
   }
 
-  LUID_AND_ATTRIBUTES attr;
   attr.Attributes = SE_PRIVILEGE_ENABLED;
   attr.Luid = luid;
 
-  TOKEN_PRIVILEGES priv;
   priv.PrivilegeCount = 1;
   priv.Privileges[0] = attr;
 
@@ -160,8 +164,6 @@ static BOOL AddSeSecurityNamePrivilege() {
     }
   }
 
-  TOKEN_PRIVILEGES oldPriv;
-  DWORD retSize;
   AdjustTokenPrivileges(token, FALSE, &priv, sizeof(TOKEN_PRIVILEGES), &oldPriv,
                         &retSize);
   err = GetLastError();
@@ -171,8 +173,8 @@ static BOOL AddSeSecurityNamePrivilege() {
     return FALSE;
   }
 
-  BOOL privAlreadyPresent = FALSE;
-  for (unsigned int i = 0; i < oldPriv.PrivilegeCount; i++) {
+  privAlreadyPresent = FALSE;
+  for (i = 0; i < oldPriv.PrivilegeCount; i++) {
     if (oldPriv.Privileges[i].Luid.HighPart == luid.HighPart &&
         oldPriv.Privileges[i].Luid.LowPart == luid.LowPart) {
       privAlreadyPresent = TRUE;
@@ -550,6 +552,7 @@ static NTSTATUS DOKAN_CALLBACK MirrorReadFile(LPCWSTR FileName, LPVOID Buffer,
                                               LPDWORD ReadLength,
                                               LONGLONG Offset,
                                               PDOKAN_FILE_INFO DokanFileInfo) {
+  OVERLAPPED overlap;
   WCHAR filePath[DOKAN_MAX_PATH];
   HANDLE handle = (HANDLE)DokanFileInfo->Context;
   ULONG offset = (ULONG)Offset;
@@ -571,7 +574,6 @@ static NTSTATUS DOKAN_CALLBACK MirrorReadFile(LPCWSTR FileName, LPVOID Buffer,
     opened = TRUE;
   }
 
-  OVERLAPPED overlap;
   memset(&overlap, 0, sizeof(OVERLAPPED));
   overlap.Offset = Offset & 0xFFFFFFFF;
   overlap.OffsetHigh = (Offset >> 32) & 0xFFFFFFFF;
@@ -599,6 +601,10 @@ static NTSTATUS DOKAN_CALLBACK MirrorWriteFile(LPCWSTR FileName, LPCVOID Buffer,
                                                LPDWORD NumberOfBytesWritten,
                                                LONGLONG Offset,
                                                PDOKAN_FILE_INFO DokanFileInfo) {
+  UINT64 fileSize;
+  DWORD fileSizeLow;
+  DWORD fileSizeHigh;
+  OVERLAPPED overlap;
   WCHAR filePath[DOKAN_MAX_PATH];
   HANDLE handle = (HANDLE)DokanFileInfo->Context;
   BOOL opened = FALSE;
@@ -621,9 +627,9 @@ static NTSTATUS DOKAN_CALLBACK MirrorWriteFile(LPCWSTR FileName, LPCVOID Buffer,
     opened = TRUE;
   }
 
-  UINT64 fileSize = 0;
-  DWORD fileSizeLow = 0;
-  DWORD fileSizeHigh = 0;
+  fileSize = 0;
+  fileSizeLow = 0;
+  fileSizeHigh = 0;
   fileSizeLow = GetFileSize(handle, &fileSizeHigh);
   if (fileSizeLow == INVALID_FILE_SIZE) {
     DWORD error = GetLastError();
@@ -635,7 +641,6 @@ static NTSTATUS DOKAN_CALLBACK MirrorWriteFile(LPCWSTR FileName, LPCVOID Buffer,
 
   fileSize = ((UINT64)fileSizeHigh << 32) | fileSizeLow;
 
-  OVERLAPPED overlap;
   memset(&overlap, 0, sizeof(OVERLAPPED));
   if (DokanFileInfo->WriteToEndOfFile) {
     overlap.Offset = 0xFFFFFFFF;
@@ -747,9 +752,10 @@ static NTSTATUS DOKAN_CALLBACK MirrorGetFileInformation(
       HandleFileInformation->dwFileAttributes = GetFileAttributes(filePath);
 
     } else {
+      HANDLE findHandle;
       WIN32_FIND_DATAW find;
       ZeroMemory(&find, sizeof(WIN32_FIND_DATAW));
-      HANDLE findHandle = FindFirstFile(filePath, &find);
+      findHandle = FindFirstFile(filePath, &find);
       if (findHandle == INVALID_HANDLE_VALUE) {
         DWORD error = GetLastError();
         DbgPrint(L"\tFindFirstFile error code = %d\n\n", error);
@@ -783,6 +789,7 @@ static NTSTATUS DOKAN_CALLBACK
 MirrorFindFiles(LPCWSTR FileName,
                 PFillFindData FillFindData, // function pointer
                 PDOKAN_FILE_INFO DokanFileInfo) {
+  BOOLEAN rootFolder;
   WCHAR filePath[DOKAN_MAX_PATH];
   size_t fileLen;
   HANDLE hFind;
@@ -812,7 +819,7 @@ MirrorFindFiles(LPCWSTR FileName,
   }
 
   // Root folder does not have . and .. folder - we remove them
-  BOOLEAN rootFolder = (wcscmp(FileName, L"\\") == 0);
+  rootFolder = (wcscmp(FileName, L"\\") == 0);
   do {
     if (!rootFolder || (wcscmp(findData.cFileName, L".") != 0 &&
                         wcscmp(findData.cFileName, L"..") != 0))
@@ -835,13 +842,14 @@ MirrorFindFiles(LPCWSTR FileName,
 
 static NTSTATUS DOKAN_CALLBACK
 MirrorDeleteFile(LPCWSTR FileName, PDOKAN_FILE_INFO DokanFileInfo) {
+  DWORD dwAttrib;
   WCHAR filePath[DOKAN_MAX_PATH];
   HANDLE handle = (HANDLE)DokanFileInfo->Context;
 
   GetFilePath(filePath, DOKAN_MAX_PATH, FileName);
   DbgPrint(L"DeleteFile %s - %d\n", filePath, DokanFileInfo->DeletePending);
 
-  DWORD dwAttrib = GetFileAttributes(filePath);
+  dwAttrib = GetFileAttributes(filePath);
 
   if (dwAttrib != INVALID_FILE_ATTRIBUTES &&
       (dwAttrib & FILE_ATTRIBUTE_DIRECTORY))
@@ -865,6 +873,7 @@ MirrorDeleteDirectory(LPCWSTR FileName, PDOKAN_FILE_INFO DokanFileInfo) {
   HANDLE hFind;
   WIN32_FIND_DATAW findData;
   size_t fileLen;
+  DWORD error;
 
   ZeroMemory(filePath, sizeof(filePath));
   GetFilePath(filePath, DOKAN_MAX_PATH, FileName);
@@ -875,6 +884,18 @@ MirrorDeleteDirectory(LPCWSTR FileName, PDOKAN_FILE_INFO DokanFileInfo) {
   if (!DokanFileInfo->DeletePending)
     //Dokan notify that the file is requested not to be deleted.
     return STATUS_SUCCESS;
+
+#if defined(DOKAN_XP_COMPAT) && (_WIN32_WINNT < 0x0600)
+  // Windows XP: FindFirstFile opens the folder without FILE_SHARE_DELETE,
+  // which collides with the handle of the delete request itself (sharing
+  // violation); Vista and later share delete there. List the folder through
+  // a handle that shares delete instead.
+  UNREFERENCED_PARAMETER(hFind);
+  UNREFERENCED_PARAMETER(findData);
+  UNREFERENCED_PARAMETER(fileLen);
+  UNREFERENCED_PARAMETER(error);
+  return DokanXpCheckDirectoryEmpty(filePath);
+#endif
 
   fileLen = wcslen(filePath);
   if (filePath[fileLen - 1] != L'\\') {
@@ -902,7 +923,7 @@ MirrorDeleteDirectory(LPCWSTR FileName, PDOKAN_FILE_INFO DokanFileInfo) {
     }
   } while (FindNextFile(hFind, &findData) != 0);
 
-  DWORD error = GetLastError();
+  error = GetLastError();
 
   FindClose(hFind);
 
@@ -1091,9 +1112,9 @@ static NTSTATUS DOKAN_CALLBACK MirrorSetAllocationSize(
 
 static NTSTATUS DOKAN_CALLBACK MirrorSetFileAttributes(
   LPCWSTR FileName, DWORD FileAttributes, PDOKAN_FILE_INFO DokanFileInfo) {
+  WCHAR filePath[DOKAN_MAX_PATH];
   UNREFERENCED_PARAMETER(DokanFileInfo);
 
-  WCHAR filePath[DOKAN_MAX_PATH];
 
   GetFilePath(filePath, DOKAN_MAX_PATH, FileName);
 
@@ -1181,6 +1202,8 @@ static NTSTATUS DOKAN_CALLBACK MirrorGetFileSecurity(
   LPCWSTR FileName, PSECURITY_INFORMATION SecurityInformation,
   PSECURITY_DESCRIPTOR SecurityDescriptor, ULONG BufferLength,
   PULONG LengthNeeded, PDOKAN_FILE_INFO DokanFileInfo) {
+  HANDLE handle;
+  DWORD securityDescriptorLength;
   WCHAR filePath[DOKAN_MAX_PATH];
   BOOLEAN requestingSaclInfo;
 
@@ -1215,7 +1238,7 @@ static NTSTATUS DOKAN_CALLBACK MirrorGetFileSecurity(
   }
 
   DbgPrint(L"  Opening new handle with READ_CONTROL access\n");
-  HANDLE handle = CreateFile(
+  handle = CreateFile(
       filePath,
       READ_CONTROL | ((requestingSaclInfo && g_HasSeSecurityPrivilege)
                           ? ACCESS_SYSTEM_SECURITY
@@ -1227,8 +1250,9 @@ static NTSTATUS DOKAN_CALLBACK MirrorGetFileSecurity(
       NULL);
 
   if (handle == INVALID_HANDLE_VALUE) {
+    int error;
     DbgPrint(L"\tinvalid handle\n\n");
-    int error = GetLastError();
+    error = GetLastError();
     return DokanNtStatusFromWin32(error);
   }
 
@@ -1247,7 +1271,7 @@ static NTSTATUS DOKAN_CALLBACK MirrorGetFileSecurity(
   }
 
   // Ensure the Security Descriptor Length is set
-  DWORD securityDescriptorLength =
+  securityDescriptorLength =
     GetSecurityDescriptorLength(SecurityDescriptor);
   DbgPrint(L"  GetUserObjectSecurity return true,  *LengthNeeded = "
            L"securityDescriptorLength \n");
@@ -1290,10 +1314,11 @@ static NTSTATUS DOKAN_CALLBACK MirrorGetVolumeInformation(
   LPDWORD MaximumComponentLength, LPDWORD FileSystemFlags,
   LPWSTR FileSystemNameBuffer, DWORD FileSystemNameSize,
   PDOKAN_FILE_INFO DokanFileInfo) {
+  WCHAR volumeRoot[4];
+  DWORD fsFlags;
   UNREFERENCED_PARAMETER(DokanFileInfo);
 
-  WCHAR volumeRoot[4];
-  DWORD fsFlags = 0;
+  fsFlags = 0;
 
   wcscpy_s(VolumeNameBuffer, VolumeNameSize, gVolumeName);
 
@@ -1366,9 +1391,9 @@ static NTSTATUS DOKAN_CALLBACK MirrorDokanGetDiskFreeSpace(
 static NTSTATUS DOKAN_CALLBACK MirrorDokanGetDiskFreeSpace(
     PULONGLONG FreeBytesAvailable, PULONGLONG TotalNumberOfBytes,
     PULONGLONG TotalNumberOfFreeBytes, PDOKAN_FILE_INFO DokanFileInfo) {
-  UNREFERENCED_PARAMETER(DokanFileInfo);
-  WCHAR DriveLetter[3] = {'C', ':', 0};
   PWCHAR RootPathName;
+  WCHAR DriveLetter[3] = {'C', ':', 0};
+  UNREFERENCED_PARAMETER(DokanFileInfo);
 
   if (gRootDirectory[0] == L'\\') { // UNC as Root
     RootPathName = gRootDirectory;
@@ -1420,13 +1445,15 @@ NTSTATUS DOKAN_CALLBACK
 MirrorFindStreams(LPCWSTR FileName, PFillFindStreamData FillFindStreamData,
                   PVOID FindStreamContext,
                   PDOKAN_FILE_INFO DokanFileInfo) {
-  UNREFERENCED_PARAMETER(DokanFileInfo);
-
   WCHAR filePath[DOKAN_MAX_PATH];
   HANDLE hFind;
   WIN32_FIND_STREAM_DATA findData;
   DWORD error;
-  int count = 0;
+  int count;
+  BOOL bufferFull;
+  UNREFERENCED_PARAMETER(DokanFileInfo);
+
+  count = 0;
 
   GetFilePath(filePath, DOKAN_MAX_PATH, FileName);
 
@@ -1440,7 +1467,7 @@ MirrorFindStreams(LPCWSTR FileName, PFillFindStreamData FillFindStreamData,
     return DokanNtStatusFromWin32(error);
   }
 
-  BOOL bufferFull = FillFindStreamData(&findData, FindStreamContext);
+  bufferFull = FillFindStreamData(&findData, FindStreamContext);
   if (bufferFull) {
     count++;
     while (FindNextStreamW(hFind, &findData) != 0) {
@@ -1706,6 +1733,13 @@ int __cdecl wmain(ULONG argc, PWCHAR argv[]) {
   }
 
   dokanOptions.Options |= DOKAN_OPTION_ALT_STREAM;
+#ifdef DOKAN_XP_COMPAT
+  // XP port test aid: mount without alternate streams (as some file systems do).
+  if (GetEnvironmentVariableW(L"DOKAN_MIRROR_NO_ALT_STREAM", NULL, 0) > 0) {
+    dokanOptions.Options &= ~DOKAN_OPTION_ALT_STREAM;
+    fwprintf(stderr, L"alternate streams off\n");
+  }
+#endif
 
   ZeroMemory(&dokanOperations, sizeof(DOKAN_OPERATIONS));
   dokanOperations.ZwCreateFile = MirrorCreateFile;

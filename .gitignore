@@ -59,3 +59,10 @@ ReleasePS
 *.log
 *.msi
 *.wixpdb
+# XP build (WDK 7.1)
+/xp/out/
+/xp/**/obj*/
+/xp/**/build*.log
+/xp/**/build*.err
+/xp/**/build*.wrn
+/sys/MSG*.bin

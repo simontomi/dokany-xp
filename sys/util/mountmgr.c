@@ -75,9 +75,9 @@ DokanSendIoContlToMountManager(__in ULONG IoControlCode,
 }
 
 NTSTATUS DokanSendVolumeMountPoint(__in PDokanDCB Dcb, BOOLEAN Create) {
-  NTSTATUS status;
   PMOUNTMGR_VOLUME_MOUNT_POINT volumMountPoint;
   ULONG length;
+  NTSTATUS status;
 
   length = sizeof(MOUNTMGR_VOLUME_MOUNT_POINT) + Dcb->MountPoint->Length +
            Dcb->PersistentSymbolicLinkName->Length;
@@ -126,9 +126,9 @@ VOID NotifyDirectoryMountPointDeleted(__in PDokanDCB Dcb) {
 
 NTSTATUS
 DokanSendVolumeArrivalNotification(PUNICODE_STRING DeviceName) {
-  NTSTATUS status;
   PMOUNTMGR_TARGET_NAME targetName;
   ULONG length;
+  NTSTATUS status;
 
   length = sizeof(MOUNTMGR_TARGET_NAME) + DeviceName->Length - 1;
   targetName = DokanAllocZero(length);
@@ -155,11 +155,12 @@ DokanSendVolumeArrivalNotification(PUNICODE_STRING DeviceName) {
 NTSTATUS
 DokanSendVolumeDeletePoints(__in PUNICODE_STRING MountPoint,
                             __in PUNICODE_STRING DeviceName) {
-  NTSTATUS status;
   PMOUNTMGR_MOUNT_POINT point;
   PMOUNTMGR_MOUNT_POINTS deletedPoints;
   ULONG length;
   ULONG olength;
+  ULONG nextStringOffset;
+  NTSTATUS status;
 
   length = sizeof(MOUNTMGR_MOUNT_POINT);
   if (MountPoint != NULL) {
@@ -182,7 +183,7 @@ DokanSendVolumeDeletePoints(__in PUNICODE_STRING MountPoint,
     return STATUS_INSUFFICIENT_RESOURCES;
   }
 
-  ULONG nextStringOffset = sizeof(MOUNTMGR_MOUNT_POINT);
+  nextStringOffset = sizeof(MOUNTMGR_MOUNT_POINT);
   if (MountPoint != NULL) {
     DOKAN_LOG_("MountPoint: \"%wZ\"", MountPoint);
     point->SymbolicLinkNameOffset = nextStringOffset;

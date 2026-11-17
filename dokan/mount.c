@@ -367,6 +367,7 @@ BOOL DOKANAPI DokanNetworkProviderInstall() {
 }
 
 BOOL DOKANAPI DokanNetworkProviderUninstall() {
+  WCHAR *dokan_pos;
   HKEY key;
   DWORD type;
   WCHAR commanp[64];
@@ -395,7 +396,7 @@ BOOL DOKANAPI DokanNetworkProviderUninstall() {
   wcscat_s(commanp, sizeof(commanp) / sizeof(WCHAR), L",");
   wcscat_s(commanp, sizeof(commanp) / sizeof(WCHAR), DOKAN_NP_NAME);
 
-  WCHAR *dokan_pos = wcsstr(buffer, commanp);
+  dokan_pos = wcsstr(buffer, commanp);
   if (dokan_pos == NULL)
     return TRUE;
   wcsncpy_s(buffer2, sizeof(buffer2) / sizeof(WCHAR), buffer,
@@ -549,14 +550,17 @@ BOOL EnableTokenPrivilege(LPCTSTR lpszSystemName, BOOL bEnable) {
 
 VOID CALLBACK DokanBroadcastCallback(PTP_CALLBACK_INSTANCE Instance,
                                      PVOID Parameter, PTP_WORK Work) {
+  DWORD device_event;
+  DEV_BROADCAST_VOLUME params;
+  WCHAR cLetter;
+  DWORD receipients;
+  BOOL bRemoved;
   UNREFERENCED_PARAMETER(Instance);
   UNREFERENCED_PARAMETER(Work);
 
-  DWORD device_event;
-  DEV_BROADCAST_VOLUME params;
-  WCHAR cLetter = (size_t)Parameter & 0xff;
-  DWORD receipients = ((size_t)Parameter >> 16) & 0x7fff;
-  BOOL bRemoved = ((size_t)Parameter >> 31) & 0x1;
+  cLetter = (size_t)Parameter & 0xff;
+  receipients = ((size_t)Parameter >> 16) & 0x7fff;
+  bRemoved = ((size_t)Parameter >> 31) & 0x1;
 
   device_event = bRemoved ? DBT_DEVICEREMOVECOMPLETE : DBT_DEVICEARRIVAL;
 
@@ -577,6 +581,8 @@ VOID CALLBACK DokanBroadcastCallback(PTP_CALLBACK_INSTANCE Instance,
 }
 
 VOID DokanBroadcastLink(PDOKAN_INSTANCE DokanInstance, BOOL bRemoved) {
+  PVOID parameter;
+  PTP_WORK work;
   DWORD receipients = BSM_APPLICATIONS;
   WCHAR drive[4] = L"C:\\";
   LONG wEventId;
@@ -594,10 +600,10 @@ VOID DokanBroadcastLink(PDOKAN_INSTANCE DokanInstance, BOOL bRemoved) {
 
   // Async call BroadcastSystemMessage to avoid possible hangs from receiver apps.
   // Store the event information inside the "unused" pointer value:
-  PVOID parameter =
+  parameter =
       (PVOID)(size_t)((bRemoved << 31) | ((receipients & 0x7fff) << 16) |
                       ((toupper(cLetter) - 'A') & 0xff));
-  PTP_WORK work =
+  work =
       CreateThreadpoolWork(DokanBroadcastCallback, parameter,
                            &DokanInstance->ThreadInfo.CallbackEnvironment);
   if (!work) {

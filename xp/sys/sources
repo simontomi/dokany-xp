@@ -1,0 +1,46 @@
+# dokan2.sys for Windows XP (x86, WXP target) and Vista (x64, WLH target), built
+# with the WDK 7.1 build.exe. The sources are wrappers that #include ..\..\sys\*.c.
+TARGETNAME=dokan2
+TARGETTYPE=DRIVER
+
+C_DEFINES=$(C_DEFINES) -DDOKAN_XP_COMPAT=1 -DUNICODE -D_UNICODE
+
+# Every source file gets the XP compatibility header first.
+# The WDK raises C4242 (possible loss of data) to level 3; the upstream build
+# does not report it, and the code relies on those conversions.
+USER_C_FLAGS=$(USER_C_FLAGS) /FI..\..\sys\xp_compat.h /wd4242
+
+# Not sys\util: its mountmgr.h would hide the system <mountmgr.h>.
+INCLUDES=..\..\sys
+
+TARGETLIBS=$(DDK_LIB_PATH)\wdmsec.lib \
+           $(DDK_LIB_PATH)\rtlver.lib
+
+SOURCES=access.c \
+        cleanup.c \
+        close.c \
+        create.c \
+        device.c \
+        directory.c \
+        dispatch.c \
+        dokan.c \
+        event.c \
+        except.c \
+        fileinfo.c \
+        flush.c \
+        fscontrol.c \
+        init.c \
+        lock.c \
+        notification.c \
+        read.c \
+        security.c \
+        timeout.c \
+        volume.c \
+        write.c \
+        util_fcb.c \
+        util_irp_buffer_helper.c \
+        util_log.c \
+        util_mountmgr.c \
+        util_str.c \
+        xp_compat.c \
+        dokan.rc

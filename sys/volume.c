@@ -25,6 +25,8 @@ with this program. If not, see <http://www.gnu.org/licenses/>.
 
 NTSTATUS
 DokanDispatchQueryVolumeInformation(__in PREQUEST_CONTEXT RequestContext) {
+  ULONGLONG freeBytesAvailable;
+  ULONGLONG totalBytes;
   NTSTATUS status = STATUS_INVALID_PARAMETER;
   PVOID buffer;
   PFILE_OBJECT fileObject;
@@ -46,20 +48,20 @@ DokanDispatchQueryVolumeInformation(__in PREQUEST_CONTEXT RequestContext) {
     return STATUS_INVALID_PARAMETER;
   }
 
-  ULONGLONG freeBytesAvailable = 512 * 1024 * 1024;
-  ULONGLONG totalBytes = 1024 * 1024 * 1024;
+  freeBytesAvailable = 512 * 1024 * 1024;
+  totalBytes = 1024 * 1024 * 1024;
 
   // TODO(drivefs-team): The block below returns hard coded defaults to
   // filter drivers that make requests during mount. We should either
   // eliminate the need for this or pass real defaults in the mount options.
   switch (RequestContext->IrpSp->Parameters.QueryVolume.FsInformationClass) {
     case FileFsVolumeInformation: {
+      PFILE_FS_VOLUME_INFORMATION FsVolInfo;
       if (RequestContext->Vcb->HasEventWait) {
         break;
       }
 
       DOKAN_LOG_FINE_IRP(RequestContext, "Still no threads for processing available");
-      PFILE_FS_VOLUME_INFORMATION FsVolInfo;
 
       if (RequestContext->IrpSp->Parameters.QueryVolume.Length <
           sizeof(FILE_FS_VOLUME_INFORMATION)) {
@@ -92,12 +94,12 @@ DokanDispatchQueryVolumeInformation(__in PREQUEST_CONTEXT RequestContext) {
     }
 
     case FileFsSizeInformation: {
+      PFILE_FS_SIZE_INFORMATION sizeInfo;
       if (RequestContext->Vcb->HasEventWait) {
         break;
       }
 
       DOKAN_LOG_FINE_IRP(RequestContext, "Still no threads for processing available");
-      PFILE_FS_SIZE_INFORMATION sizeInfo;
 
       if (!PREPARE_OUTPUT(RequestContext->Irp, sizeInfo,
                           /*SetInformationOnFailure=*/FALSE)) {
@@ -132,12 +134,12 @@ DokanDispatchQueryVolumeInformation(__in PREQUEST_CONTEXT RequestContext) {
     }
 
     case FileFsAttributeInformation: {
+      PFILE_FS_ATTRIBUTE_INFORMATION FsAttrInfo;
       if (RequestContext->Vcb->HasEventWait) {
         break;
       }
 
       DOKAN_LOG_FINE_IRP(RequestContext, "Still no threads for processing available");
-      PFILE_FS_ATTRIBUTE_INFORMATION FsAttrInfo;
 
       if (RequestContext->IrpSp->Parameters.QueryVolume.Length <
           sizeof(FILE_FS_ATTRIBUTE_INFORMATION)) {
@@ -169,12 +171,12 @@ DokanDispatchQueryVolumeInformation(__in PREQUEST_CONTEXT RequestContext) {
     }
 
     case FileFsFullSizeInformation: {
+      PFILE_FS_FULL_SIZE_INFORMATION sizeInfo;
       if (RequestContext->Vcb->HasEventWait) {
         break;
       }
 
       DOKAN_LOG_FINE_IRP(RequestContext, "Still no threads for processing available");
-      PFILE_FS_FULL_SIZE_INFORMATION sizeInfo;
       if (!PREPARE_OUTPUT(RequestContext->Irp, sizeInfo,
                           /*SetInformationOnFailure=*/FALSE)) {
         return STATUS_BUFFER_OVERFLOW;
@@ -259,9 +261,10 @@ VOID DokanCompleteQueryVolumeInformation(__in PREQUEST_CONTEXT RequestContext,
   if (RequestContext->IrpSp->Parameters.QueryVolume.FsInformationClass ==
           FileFsAttributeInformation &&
       IS_DEVICE_READ_ONLY(RequestContext->IrpSp->DeviceObject)) {
+    PFILE_FS_ATTRIBUTE_INFORMATION attrInfo;
     DOKAN_LOG_FINE_IRP(RequestContext,
                        "Adding FILE_READ_ONLY_VOLUME flag to attributes");
-    PFILE_FS_ATTRIBUTE_INFORMATION attrInfo =
+    attrInfo =
         (PFILE_FS_ATTRIBUTE_INFORMATION)EventInfo->Buffer;
     attrInfo->FileSystemAttributes |= FILE_READ_ONLY_VOLUME;
   }
@@ -272,12 +275,13 @@ VOID DokanCompleteQueryVolumeInformation(__in PREQUEST_CONTEXT RequestContext,
   if (RequestContext->IrpSp->Parameters.QueryVolume.FsInformationClass ==
           FileFsVolumeInformation &&
       RequestContext->Dcb->VolumeLabel != NULL) {
+    ULONG bytesToCopy;
     PFILE_FS_VOLUME_INFORMATION volumeInfo =
         (PFILE_FS_VOLUME_INFORMATION)EventInfo->Buffer;
 
     ULONG remainingLength = bufferLen;
     remainingLength -= FIELD_OFFSET(FILE_FS_VOLUME_INFORMATION, VolumeLabel[0]);
-    ULONG bytesToCopy =
+    bytesToCopy =
         (ULONG)wcslen(RequestContext->Dcb->VolumeLabel) * sizeof(WCHAR);
     if (remainingLength < bytesToCopy) {
       bytesToCopy = remainingLength;
@@ -317,12 +321,13 @@ DokanDispatchSetVolumeInformation(__in PREQUEST_CONTEXT RequestContext) {
                      DokanGetFsInformationClassStr(fsInformationClass));
   switch (fsInformationClass) {
     case FileFsLabelInformation: {
+      PFILE_FS_LABEL_INFORMATION Info;
       if (sizeof(FILE_FS_LABEL_INFORMATION) >
           RequestContext->IrpSp->Parameters.SetVolume.Length) {
         return STATUS_INVALID_PARAMETER;
       }
 
-      PFILE_FS_LABEL_INFORMATION Info = (PFILE_FS_LABEL_INFORMATION)buffer;
+      Info = (PFILE_FS_LABEL_INFORMATION)buffer;
       ExAcquireResourceExclusiveLite(&RequestContext->Dcb->Resource, TRUE);
       if (RequestContext->Dcb->VolumeLabel != NULL)
         ExFreePool(RequestContext->Dcb->VolumeLabel);

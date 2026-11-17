@@ -234,11 +234,12 @@ DiskDeviceControl(__in PREQUEST_CONTEXT RequestContext,
 
       if (query->QueryType == PropertyExistsQuery) {
         if (query->PropertyId == StorageDeviceUniqueIdProperty) {
+          PSTORAGE_DEVICE_UNIQUE_IDENTIFIER storage;
           DOKAN_LOG_FINE_IRP(
               RequestContext,
               "PropertyExistsQuery StorageDeviceUniqueIdProperty");
 
-          PSTORAGE_DEVICE_UNIQUE_IDENTIFIER storage = NULL;
+          storage = NULL;
           GET_IRP_BUFFER_OR_BREAK(RequestContext->Irp, storage);
 
           status = STATUS_SUCCESS;
@@ -254,10 +255,11 @@ DiskDeviceControl(__in PREQUEST_CONTEXT RequestContext,
         }
       } else if (query->QueryType == PropertyStandardQuery) {
         if (query->PropertyId == StorageDeviceProperty) {
+          PSTORAGE_DEVICE_DESCRIPTOR storage;
           DOKAN_LOG_FINE_IRP(RequestContext,
                              "PropertyStandardQuery StorageDeviceProperty");
 
-          PSTORAGE_DEVICE_DESCRIPTOR storage = NULL;
+          storage = NULL;
           GET_IRP_BUFFER_OR_BREAK(RequestContext->Irp, storage);
 
           status = STATUS_SUCCESS;
@@ -279,10 +281,10 @@ DiskDeviceControl(__in PREQUEST_CONTEXT RequestContext,
     }
 
     case IOCTL_MOUNTDEV_QUERY_DEVICE_NAME: {
+      PMOUNTDEV_NAME mountdevName;
       // Note: GetVolumeNameForVolumeMountPoint, which wraps this function, may
       // return an error even if this returns success, if it doesn't match the
       // Mount Manager's cached data.
-      PMOUNTDEV_NAME mountdevName;
       if (!PrepareOutputHelper(RequestContext->Irp, &mountdevName,
                                FIELD_OFFSET(MOUNTDEV_NAME, Name),
                                /*SetInformationOnFailure=*/TRUE)) {
@@ -321,6 +323,7 @@ DiskDeviceControl(__in PREQUEST_CONTEXT RequestContext,
     } break;
 
     case IOCTL_MOUNTDEV_QUERY_SUGGESTED_LINK_NAME: {
+      PMOUNTDEV_SUGGESTED_LINK_NAME linkName;
       // Invoked when the mount manager is considering assigning a drive letter
       // to a newly mounted volume. This lets us make a non-binding request for
       // a certain drive letter before assignment happens.
@@ -329,7 +332,6 @@ DiskDeviceControl(__in PREQUEST_CONTEXT RequestContext,
                    L" ForceDriveLetterAutoAssignment = %d",
                    dcb->ForceDriveLetterAutoAssignment);
 
-      PMOUNTDEV_SUGGESTED_LINK_NAME linkName;
       if (!PrepareOutputHelper(RequestContext->Irp, &linkName,
                                FIELD_OFFSET(MOUNTDEV_SUGGESTED_LINK_NAME, Name),
                                /*SetInformationOnFailure=*/TRUE)) {
@@ -378,14 +380,17 @@ DiskDeviceControl(__in PREQUEST_CONTEXT RequestContext,
     } break;
 
     case IOCTL_MOUNTDEV_LINK_CREATED: {
+      UNICODE_STRING mountdevNameString;
+      PMOUNT_ENTRY mountEntry;
+      PMOUNTDEV_NAME mountdevName;
       // Invoked when a mount point gets assigned by the mount manager. Usually
       // it is the one we asked for, but not always; therefore we have to update
       // the data structures that are thus far presuming it's the one we asked
       // for.
 
-      PMOUNTDEV_NAME mountdevName = NULL;
+      mountdevName = NULL;
       GET_IRP_MOUNTDEV_NAME_OR_BREAK(RequestContext->Irp, mountdevName);
-      UNICODE_STRING mountdevNameString =
+      mountdevNameString =
           DokanWrapUnicodeString(mountdevName->Name, mountdevName->NameLength);
       status = STATUS_SUCCESS;
       DokanLogInfo(&logger, L"Link created: \"%wZ\"", &mountdevNameString);
@@ -430,7 +435,7 @@ DiskDeviceControl(__in PREQUEST_CONTEXT RequestContext,
       // Update the mount point in dokan's global list, so that other dokan
       // functions (e.g. for unmounting) can look up the drive by mount point
       // later.
-      PMOUNT_ENTRY mountEntry =
+      mountEntry =
           FindMountEntryByName(dcb->Global, dcb->DiskDeviceName, dcb->UNCName,
                                /*ExclusiveLock=*/TRUE);
       if (mountEntry != NULL) {
@@ -443,6 +448,7 @@ DiskDeviceControl(__in PREQUEST_CONTEXT RequestContext,
     } break;
 
     case IOCTL_MOUNTDEV_LINK_DELETED: {
+      UNICODE_STRING mountdevNameString;
       // This is normally triggered by dokan-initiated unmounting, in which case
       // it is an uninteresting acknowledgement from the mount manager. That is
       // the case even for most edge cases like termination of the mounting
@@ -451,7 +457,7 @@ DiskDeviceControl(__in PREQUEST_CONTEXT RequestContext,
 
       PMOUNTDEV_NAME mountdevName = NULL;
       GET_IRP_MOUNTDEV_NAME_OR_BREAK(RequestContext->Irp, mountdevName);
-      UNICODE_STRING mountdevNameString =
+      mountdevNameString =
           DokanWrapUnicodeString(mountdevName->Name, mountdevName->NameLength);
       status = STATUS_SUCCESS;
       DokanLogInfo(&logger, L"Link deleted: \"%wZ\"", &mountdevNameString);
@@ -497,12 +503,15 @@ DiskDeviceControl(__in PREQUEST_CONTEXT RequestContext,
       BOOLEAN prefixOk = FALSE;
 
       if (dcb->UNCName != NULL && dcb->UNCName->Length > 0) {
+        WCHAR *lpPath;
+        ULONG ulPath;
+        unsigned int i;
         if (RequestContext->Irp->RequestorMode != KernelMode) {
           break;
         }
 
-        WCHAR* lpPath = NULL;
-        ULONG ulPath = 0;
+        lpPath = NULL;
+        ulPath = 0;
 
         if (RequestContext->IrpSp->Parameters.DeviceIoControl.IoControlCode ==
             IOCTL_REDIR_QUERY_PATH) {
@@ -554,7 +563,7 @@ DiskDeviceControl(__in PREQUEST_CONTEXT RequestContext,
           }
         }
 
-        unsigned int i = 1;
+        i = 1;
         for (; i < ulPath && i * sizeof(WCHAR) < dcb->UNCName->Length &&
                !prefixOk;
              ++i) {
@@ -597,6 +606,7 @@ DiskDeviceControl(__in PREQUEST_CONTEXT RequestContext,
     } break;
 
     case IOCTL_STORAGE_GET_MEDIA_TYPES_EX: {
+      PDISK_GEOMETRY diskGeometry;
       PGET_MEDIA_TYPES mediaTypes = NULL;
       PDEVICE_MEDIA_INFO mediaInfo = NULL;  //&mediaTypes->MediaInfo[0];
 
@@ -612,7 +622,7 @@ DiskDeviceControl(__in PREQUEST_CONTEXT RequestContext,
       mediaTypes->DeviceType = FILE_DEVICE_VIRTUAL_DISK;
       mediaTypes->MediaInfoCount = 1;
 
-      PDISK_GEOMETRY diskGeometry = DokanAllocZero(sizeof(DISK_GEOMETRY));
+      diskGeometry = DokanAllocZero(sizeof(DISK_GEOMETRY));
       if (diskGeometry == NULL) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         break;

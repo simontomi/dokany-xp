@@ -1,3 +1,12 @@
+> **This fork: Dokany 2.3.1.1000 for Windows XP and Vista** (branch `xp-port`).
+> The port was written by Claude, Anthropic's AI model (Claude Opus 5.5 in
+> Claude Code), not by a human developer: it is AI-generated ("vibe coded"),
+> the Dokany developers have not reviewed it, and it is not an official Dokany
+> release. Its publisher asked for it and tested it on real XP, Vista and 7 PCs
+> but did not write the code. Build steps, what changed and the test results:
+> [xp/README.md](xp/README.md). The rest of this page is upstream Dokany's
+> README.
+
 # Dokany
 
 [![Github All Releases](https://img.shields.io/github/downloads/dokan-dev/dokany/total.svg)](https://github.com/dokan-dev/dokany/releases)

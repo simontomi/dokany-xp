@@ -31,6 +31,7 @@ with this program. If not, see <http://www.gnu.org/licenses/>.
 
 VOID DokanCreateIrpCancelRoutine(_Inout_ PDEVICE_OBJECT DeviceObject,
                                  _Inout_ _IRQL_uses_cancel_ PIRP Irp) {
+  PIRP_ENTRY irpEntry;
   // Cancellation of a Create is handled like a timeout. The whole effect of
   // this routine is just to set the IRP entry's tick count so as to trigger a
   // timeout, and then force the timeout thread to wake up. This simplifies the
@@ -38,15 +39,17 @@ VOID DokanCreateIrpCancelRoutine(_Inout_ PDEVICE_OBJECT DeviceObject,
   // context where the cancel routine runs. For other types of IRPs, the cancel
   // routine actually does cancelation/cleanup.
   IoReleaseCancelSpinLock(Irp->CancelIrql);
-  PIRP_ENTRY irpEntry =
+  irpEntry =
       Irp->Tail.Overlay.DriverContext[DRIVER_CONTEXT_IRP_ENTRY];
   if (irpEntry != NULL) {
+    PDokanVCB vcb;
+    PDokanDCB dcb;
     Irp->Tail.Overlay.DriverContext[DRIVER_CONTEXT_EVENT] = NULL;
     InterlockedAnd64(&irpEntry->TickCount.QuadPart, 0);
     irpEntry->AsyncStatus = STATUS_CANCELLED;
     irpEntry->RequestContext.ForcedCanceled = TRUE;
-    PDokanVCB vcb = DeviceObject->DeviceExtension;
-    PDokanDCB dcb = vcb->Dcb;
+    vcb = DeviceObject->DeviceExtension;
+    dcb = vcb->Dcb;
     KeSetEvent(&dcb->ForceTimeoutEvent, 0, FALSE);
   }
 }
@@ -143,16 +146,18 @@ Return Value:
 None.
 --*/
 {
+  PIO_STACK_LOCATION irpSp;
+  REQUEST_CONTEXT requestContext;
+  NTSTATUS status;
   PAGED_CODE();
 
   if (Irp == NULL) {
     DOKAN_LOG("NULL Irp received");
     return;
   }
-  PIO_STACK_LOCATION irpSp = IoGetCurrentIrpStackLocation(Irp);
+  irpSp = IoGetCurrentIrpStackLocation(Irp);
 
-  REQUEST_CONTEXT requestContext;
-  NTSTATUS status = DokanBuildRequestContext(
+  status = DokanBuildRequestContext(
       irpSp->DeviceObject, Irp, /*IsTopLevelIrp=*/FALSE, &requestContext);
   if (!NT_SUCCESS(status)) {
     DOKAN_LOG_("Failed to build request context for IRP=%p Status=%s", Irp,
@@ -183,9 +188,10 @@ None.
 // do the right thing here with conservative impact.
 VOID DokanPrePostIrp(IN PVOID Context, IN PIRP Irp)
 {
-  UNREFERENCED_PARAMETER(Context);
-  PIO_STACK_LOCATION irpSp = IoGetCurrentIrpStackLocation(Irp);
+  PIO_STACK_LOCATION irpSp;
   REQUEST_CONTEXT requestContext;
+  UNREFERENCED_PARAMETER(Context);
+  irpSp = IoGetCurrentIrpStackLocation(Irp);
   DokanBuildRequestContext(irpSp->DeviceObject, Irp, /*IsTopLevelIrp=*/FALSE,
                            &requestContext);
   DOKAN_LOG_FINE_IRP((&requestContext), "Mark Irp pending");
@@ -684,6 +690,7 @@ BOOLEAN MaybeUnmountOldDrive(__in PREQUEST_CONTEXT RequestContext,
                              __in PDEVICE_OBJECT OldDevice,
                              __in PDokanDCB OldDcb,
                              __in PDOKAN_CONTROL NewControl) {
+  PMOUNT_ENTRY entryAfterUnmount;
   DokanLogInfo(Logger,
       L"Mount point exists and"
       L" DOKAN_EVENT_REPLACE_DOKAN_DRIVE_IF_EXISTS is set: %s",
@@ -695,7 +702,7 @@ BOOLEAN MaybeUnmountOldDrive(__in PREQUEST_CONTEXT RequestContext,
   }
   DokanLogInfo(Logger, L"Unmounting the existing drive.");
   DokanUnmount(RequestContext, OldDcb);
-  PMOUNT_ENTRY entryAfterUnmount =
+  entryAfterUnmount =
       FindMountEntry(DokanGlobal, NewControl, /*ExclusiveLock=*/FALSE);
   if (entryAfterUnmount != NULL) {
     DokanLogInfo(
@@ -710,6 +717,7 @@ BOOLEAN MaybeUnmountOldDrive(__in PREQUEST_CONTEXT RequestContext,
 
 VOID RemoveSessionDevices(__in PREQUEST_CONTEXT RequestContext,
                           __in ULONG sessionId) {
+  PDEVICE_ENTRY foundEntry;
   if (sessionId == -1) {
     return;
   }
@@ -718,7 +726,6 @@ VOID RemoveSessionDevices(__in PREQUEST_CONTEXT RequestContext,
                                       TRUE)) {
     DOKAN_LOG("Not able to acquire dokanGlobal->Resource \n");
   }
-  PDEVICE_ENTRY foundEntry;
   while ((foundEntry = FindDeviceForDeleteBySessionId(
               RequestContext->DokanGlobal, sessionId)) != NULL) {
     DeleteMountPointSymbolicLink(&foundEntry->MountPoint);
@@ -731,6 +738,10 @@ VOID RemoveSessionDevices(__in PREQUEST_CONTEXT RequestContext,
 // start event dispatching
 NTSTATUS
 DokanEventStart(__in PREQUEST_CONTEXT RequestContext) {
+  DOKAN_CONTROL dokanControl;
+  PMOUNT_ENTRY foundPrevEntry;
+  PMOUNT_ENTRY mountEntry;
+  PDEVICE_OBJECT volumeDeviceObject;
   ULONG outBufferLen;
   PEVENT_START eventStart = NULL;
   PEVENT_DRIVER_INFO driverInfo = NULL;
@@ -862,7 +873,6 @@ DokanEventStart(__in PREQUEST_CONTEXT RequestContext) {
   KeEnterCriticalRegion();
   ExAcquireResourceExclusiveLite(&RequestContext->DokanGlobal->Resource, TRUE);
 
-  DOKAN_CONTROL dokanControl;
   RtlZeroMemory(&dokanControl, sizeof(DOKAN_CONTROL));
   RtlStringCchCopyW(dokanControl.MountPoint, MAXIMUM_FILENAME_LENGTH,
                     L"\\DosDevices\\");
@@ -879,7 +889,7 @@ DokanEventStart(__in PREQUEST_CONTEXT RequestContext) {
 
   DOKAN_LOG_FINE_IRP(RequestContext, "Checking for MountPoint %ls",
                      dokanControl.MountPoint);
-  PMOUNT_ENTRY foundPrevEntry =
+  foundPrevEntry =
       FindMountEntry(RequestContext->DokanGlobal, &dokanControl,
                      /*ExclusiveLock=*/FALSE);
   if (foundPrevEntry != NULL && !useMountManager) {
@@ -1069,7 +1079,7 @@ DokanEventStart(__in PREQUEST_CONTEXT RequestContext) {
 
   IoVerifyVolume(dcb->DeviceObject, FALSE);
 
-  PMOUNT_ENTRY mountEntry =
+  mountEntry =
       FindMountEntry(RequestContext->DokanGlobal, &dokanControl,
                      /*ExclusiveLock=*/FALSE);
   if (!mountEntry) {
@@ -1155,7 +1165,7 @@ DokanEventStart(__in PREQUEST_CONTEXT RequestContext) {
   ExFreePool(eventStart);
   ExFreePool(baseGuidString);
 
-  PDEVICE_OBJECT volumeDeviceObject =
+  volumeDeviceObject =
       mountEntry->MountControl.VolumeDeviceObject;
   ExReleaseResourceLite(&mountEntry->Resource);
   if (driverInfo->Flags & DOKAN_DRIVER_INFO_NO_MOUNT_POINT_ASSIGNED) {

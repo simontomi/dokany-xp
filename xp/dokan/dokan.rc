@@ -1,0 +1,2 @@
+// XP build wrapper: the DLL version resource
+#include "../../dokan/dokan.rc"

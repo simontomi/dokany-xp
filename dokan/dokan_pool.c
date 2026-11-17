@@ -23,7 +23,9 @@ with this program. If not, see <http://www.gnu.org/licenses/>.
 #include "dokan_vector.h"
 
 #include <assert.h>
+#ifndef DOKAN_XP_COMPAT
 #include <threadpoolapiset.h>
+#endif
 
 #define DOKAN_IO_BATCH_POOL_SIZE 1024
 #define DOKAN_IO_EVENT_POOL_SIZE 1024
@@ -132,7 +134,8 @@ VOID CleanupPool() {
   {
     EnterCriticalSection(&g_IoBatchBufferCriticalSection);
     {
-      for (size_t i = 0; i < DokanVector_GetCount(g_IoBatchBufferPool); ++i) {
+      size_t i;
+      for (i = 0; i < DokanVector_GetCount(g_IoBatchBufferPool); ++i) {
         FreeIoBatchBuffer(
             *(PDOKAN_IO_BATCH *)DokanVector_GetItem(g_IoBatchBufferPool, i));
       }
@@ -147,7 +150,8 @@ VOID CleanupPool() {
   {
     EnterCriticalSection(&g_IoEventBufferCriticalSection);
     {
-      for (size_t i = 0; i < DokanVector_GetCount(g_IoEventBufferPool); ++i) {
+      size_t i;
+      for (i = 0; i < DokanVector_GetCount(g_IoEventBufferPool); ++i) {
         FreeIoEventBuffer(
             *(PDOKAN_IO_EVENT *)DokanVector_GetItem(g_IoEventBufferPool, i));
       }
@@ -162,7 +166,8 @@ VOID CleanupPool() {
   {
     EnterCriticalSection(&g_EventResultCriticalSection);
     {
-      for (size_t i = 0; i < DokanVector_GetCount(g_EventResultPool); ++i) {
+      size_t i;
+      for (i = 0; i < DokanVector_GetCount(g_EventResultPool); ++i) {
         FreeEventResult(
             *(PEVENT_INFORMATION *)DokanVector_GetItem(g_EventResultPool, i));
       }
@@ -176,7 +181,8 @@ VOID CleanupPool() {
   {
     EnterCriticalSection(&g_16KEventResultCriticalSection);
     {
-      for (size_t i = 0; i < DokanVector_GetCount(g_16KEventResultPool); ++i) {
+      size_t i;
+      for (i = 0; i < DokanVector_GetCount(g_16KEventResultPool); ++i) {
         FreeEventResult(*(PEVENT_INFORMATION *)DokanVector_GetItem(
             g_16KEventResultPool, i));
       }
@@ -190,7 +196,8 @@ VOID CleanupPool() {
   {
     EnterCriticalSection(&g_32KEventResultCriticalSection);
     {
-      for (size_t i = 0; i < DokanVector_GetCount(g_32KEventResultPool); ++i) {
+      size_t i;
+      for (i = 0; i < DokanVector_GetCount(g_32KEventResultPool); ++i) {
         FreeEventResult(*(PEVENT_INFORMATION *)DokanVector_GetItem(
             g_32KEventResultPool, i));
       }
@@ -204,7 +211,8 @@ VOID CleanupPool() {
   {
     EnterCriticalSection(&g_64KEventResultCriticalSection);
     {
-      for (size_t i = 0; i < DokanVector_GetCount(g_64KEventResultPool); ++i) {
+      size_t i;
+      for (i = 0; i < DokanVector_GetCount(g_64KEventResultPool); ++i) {
         FreeEventResult(*(PEVENT_INFORMATION *)DokanVector_GetItem(
             g_64KEventResultPool, i));
       }
@@ -218,7 +226,8 @@ VOID CleanupPool() {
   {
     EnterCriticalSection(&g_128KEventResultCriticalSection);
     {
-      for (size_t i = 0; i < DokanVector_GetCount(g_128KEventResultPool); ++i) {
+      size_t i;
+      for (i = 0; i < DokanVector_GetCount(g_128KEventResultPool); ++i) {
         FreeEventResult(*(PEVENT_INFORMATION *)DokanVector_GetItem(
             g_128KEventResultPool, i));
       }
@@ -233,7 +242,8 @@ VOID CleanupPool() {
   {
     EnterCriticalSection(&g_FileInfoCriticalSection);
     {
-      for (size_t i = 0; i < DokanVector_GetCount(g_FileInfoPool); ++i) {
+      size_t i;
+      for (i = 0; i < DokanVector_GetCount(g_FileInfoPool); ++i) {
         FreeFileOpenInfo(
             *(PDOKAN_OPEN_INFO *)DokanVector_GetItem(g_FileInfoPool, i));
       }
@@ -248,7 +258,8 @@ VOID CleanupPool() {
   {
     EnterCriticalSection(&g_DirectoryListCriticalSection);
     {
-      for (size_t i = 0; i < DokanVector_GetCount(g_DirectoryListPool); ++i) {
+      size_t i;
+      for (i = 0; i < DokanVector_GetCount(g_DirectoryListPool); ++i) {
         DokanVector_Free(
             *(PDOKAN_VECTOR *)DokanVector_GetItem(g_DirectoryListPool, i));
       }
@@ -291,8 +302,9 @@ VOID FreeIoBatchBuffer(PDOKAN_IO_BATCH IoBatch) {
 }
 
 VOID PushIoBatchBuffer(PDOKAN_IO_BATCH IoBatch) {
+  LONG currentEventContextBatchCount;
   assert(IoBatch);
-  LONG currentEventContextBatchCount =
+  currentEventContextBatchCount =
       InterlockedDecrement(&IoBatch->EventContextBatchCount);
   if (currentEventContextBatchCount > 0) {
     return;
@@ -577,8 +589,9 @@ PDOKAN_OPEN_INFO PopFileOpenInfo() {
 }
 
 VOID CleanupFileOpenInfo(PDOKAN_OPEN_INFO FileInfo) {
+  PDOKAN_VECTOR dirList;
   assert(FileInfo);
-  PDOKAN_VECTOR dirList = NULL;
+  dirList = NULL;
   EnterCriticalSection(&FileInfo->CriticalSection);
   {
     if (FileInfo->DirListSearchPattern) {

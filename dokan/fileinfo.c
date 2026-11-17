@@ -260,6 +260,7 @@ typedef struct _DOKAN_FIND_STREAM_DATA {
 
 BOOL WINAPI DokanFillFindStreamData(PWIN32_FIND_STREAM_DATA FindStreamData,
                                     PVOID FindStreamContext) {
+  PFILE_STREAM_INFORMATION streamInfo;
 
   PDOKAN_IO_EVENT ioEvent = (PDOKAN_IO_EVENT)FindStreamContext;
   ULONG offset = (ULONG)ioEvent->EventResult->BufferLength;
@@ -274,7 +275,7 @@ BOOL WINAPI DokanFillFindStreamData(PWIN32_FIND_STREAM_DATA FindStreamData,
       QuadAlign(sizeof(FILE_STREAM_INFORMATION) + streamNameLength);
   assert(entrySize % DOKAN_STREAM_ENTRY_ALIGNMENT == 0);
 
-  PFILE_STREAM_INFORMATION streamInfo =
+  streamInfo =
       (PFILE_STREAM_INFORMATION)&ioEvent->EventResult->Buffer[offset];
   if (offset + entrySize + streamInfo->NextEntryOffset > resultBufferSize) {
     return FALSE;

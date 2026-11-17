@@ -83,6 +83,7 @@ BOOLEAN DokanInitializeFcb(__in PREQUEST_CONTEXT RequestContext,
 PDokanFCB GetOrCreateUninitializedFcb(__in PREQUEST_CONTEXT RequestContext,
                                       __in PUNICODE_STRING FileName,
                                       __in PBOOLEAN NewElement) {
+  PDokanFCB *fcbInTable;
   PDokanFCB fcb = NULL;
 
   fcb = ExAllocateFromLookasideListEx(&g_DokanFCBLookasideList);
@@ -97,7 +98,7 @@ PDokanFCB GetOrCreateUninitializedFcb(__in PREQUEST_CONTEXT RequestContext,
   RtlZeroMemory(fcb, sizeof(DokanFCB));
   fcb->FileName = *FileName;
 
-  PDokanFCB *fcbInTable = (PDokanFCB *)RtlInsertElementGenericTableAvl(
+  fcbInTable = (PDokanFCB *)RtlInsertElementGenericTableAvl(
       &RequestContext->Vcb->FcbTable, &fcb, sizeof(PDokanFCB), NewElement);
   if (!fcbInTable) {
     ExFreeToLookasideListEx(&g_DokanFCBLookasideList, fcb);
@@ -111,14 +112,16 @@ PDokanFCB GetOrCreateUninitializedFcb(__in PREQUEST_CONTEXT RequestContext,
 
 PDokanFCB DokanGetFCB(__in PREQUEST_CONTEXT RequestContext,
                       __in PWCHAR FileName, __in ULONG FileNameLength) {
-  UNICODE_STRING fn = DokanWrapUnicodeString(FileName, FileNameLength);
+  BOOLEAN newElement;
+  PDokanFCB fcb;
+  UNICODE_STRING fn = DokanWrapUnicodeString(FileName, (USHORT)FileNameLength);
 
   UNREFERENCED_PARAMETER(RequestContext);
 
   DokanVCBLockRW(RequestContext->Vcb);
 
-  BOOLEAN newElement = FALSE;
-  PDokanFCB fcb = GetOrCreateUninitializedFcb(RequestContext, &fn, &newElement);
+  newElement = FALSE;
+  fcb = GetOrCreateUninitializedFcb(RequestContext, &fn, &newElement);
   if (!fcb) {
     ExFreePool(FileName);
     DOKAN_LOG_FINE_IRP(RequestContext, "Failed to find or allocate FCB for %wZ",
@@ -155,6 +158,7 @@ PDokanFCB DokanGetFCB(__in PREQUEST_CONTEXT RequestContext,
 
 NTSTATUS
 DokanFreeFCB(__in PDokanVCB Vcb, __in PDokanFCB Fcb) {
+  LONG64 validFcbMask;
   DOKAN_INIT_LOGGER(logger, Vcb->DeviceObject->DriverObject, 0);
   DokanBackTrace trace = {0};
   ASSERT(Vcb != NULL);
@@ -172,7 +176,7 @@ DokanFreeFCB(__in PDokanVCB Vcb, __in PDokanFCB Fcb) {
   }
 
   // This check should identify wildly bogus FCB addresses like 12345.
-  LONG64 validFcbMask = Vcb->ValidFcbMask;
+  validFcbMask = Vcb->ValidFcbMask;
   if ((validFcbMask & (LONG64)Fcb) != validFcbMask) {
     DokanCaptureBackTrace(&trace);
     return DokanLogError(&logger, STATUS_INVALID_PARAMETER,
@@ -357,10 +361,11 @@ BOOLEAN DokanForceFcbGarbageCollection(__in PDokanVCB Vcb) {
 // Called when there are no pending garbage FCBs and we may need to wait
 // indefinitely for one to appear.
 NTSTATUS WaitForNewFcbGarbage(__in PDokanVCB Vcb) {
+  NTSTATUS status;
   PVOID events[2];
   events[0] = &Vcb->Dcb->ReleaseEvent;
   events[1] = &Vcb->FcbGarbageListNotEmpty;
-  NTSTATUS status = KeWaitForMultipleObjects(2, events, WaitAny, Executive,
+  status = KeWaitForMultipleObjects(2, events, WaitAny, Executive,
                                              KernelMode, FALSE, NULL, NULL);
   return status == STATUS_WAIT_1 ? STATUS_SUCCESS : STATUS_CANCELLED;
 }
@@ -488,6 +493,9 @@ VOID DokanFreeFcbAvl(__in struct _RTL_AVL_TABLE *Table, __in PVOID Buffer) {
 
 VOID DokanRenameFcb(__in PREQUEST_CONTEXT RequestContext, __in PDokanFCB Fcb,
                     __in PWCH FileName, __in USHORT FileNameLength) {
+  BOOLEAN newElement;
+  PDokanFCB *fcbInTable;
+  PDokanFCB conflictingFcb;
   BOOLEAN removed =
       RtlDeleteElementGenericTableAvl(&RequestContext->Vcb->FcbTable, &Fcb);
   ASSERT(removed);
@@ -495,15 +503,15 @@ VOID DokanRenameFcb(__in PREQUEST_CONTEXT RequestContext, __in PDokanFCB Fcb,
 
   Fcb->FileName = DokanWrapUnicodeString(FileName, FileNameLength);
 
-  BOOLEAN newElement = FALSE;
-  PDokanFCB *fcbInTable = (PDokanFCB *)RtlInsertElementGenericTableAvl(
+  newElement = FALSE;
+  fcbInTable = (PDokanFCB *)RtlInsertElementGenericTableAvl(
       &RequestContext->Vcb->FcbTable, &Fcb, sizeof(PDokanFCB), &newElement);
   ASSERT(fcbInTable);
   if (newElement) {
     return;
   }
 
-  PDokanFCB conflictingFcb = *fcbInTable;
+  conflictingFcb = *fcbInTable;
   ASSERT(!conflictingFcb->ReplacedByRename);
   // An Fcb with the same name already exists in the table and needs to be
   // removed to allow the new Fcb to take over.

@@ -194,6 +194,22 @@ NTSTATUS DokanGetParentDir(__in const WCHAR *fileName, __out WCHAR **parentDir,
 void FixFileNameForReparseMountPoint(__in const UNICODE_STRING *MountPoint,
                                      __in PIRP Irp,
                                      __in PIO_STACK_LOCATION IrpSp) {
+  PECP_LIST ecpList;
+  struct SYMLINK_ECP_CONTEXT *ecpContext;
+  USHORT unparsedNameLength;
+  PUNICODE_STRING FileName;
+  USHORT fileNameLength;
+  USHORT ecpNameLength;
+  PWSTR unparsedNameInFileObject;
+  UNICODE_STRING unparsedNameInFileObjectUS;
+  PWSTR unparsedNameInEcp;
+  UNICODE_STRING unparsedNameInEcpUS;
+  // IopSymlinkECPGuid "73d5118a-88ba-439f-92f4-46d38952d250";
+  static const GUID iopSymlinkECPGuid = {
+      0x73d5118a,
+      0x88ba,
+      0x439f,
+      {0x92, 0xf4, 0x46, 0xd3, 0x89, 0x52, 0xd2, 0x50}};
 
   if (!g_FixFileNameForReparseMountPoint) {
     return;
@@ -203,15 +219,6 @@ void FixFileNameForReparseMountPoint(__in const UNICODE_STRING *MountPoint,
   if (IsMountPointDriveLetter(MountPoint)) {
     return;
   }
-
-  PECP_LIST ecpList;
-  struct SYMLINK_ECP_CONTEXT *ecpContext;
-  // IopSymlinkECPGuid "73d5118a-88ba-439f-92f4-46d38952d250";
-  static const GUID iopSymlinkECPGuid = {
-      0x73d5118a,
-      0x88ba,
-      0x439f,
-      {0x92, 0xf4, 0x46, 0xd3, 0x89, 0x52, 0xd2, 0x50}};
 
   if (!NT_SUCCESS(FsRtlGetEcpListFromIrp(Irp, &ecpList)) || !ecpList) {
     return;
@@ -224,27 +231,27 @@ void FixFileNameForReparseMountPoint(__in const UNICODE_STRING *MountPoint,
       !ecpContext->FlagsMountPoint.MountPoint.MountPoint) {
     return;
   }
-  USHORT unparsedNameLength = ecpContext->UnparsedNameLength;
+  unparsedNameLength = ecpContext->UnparsedNameLength;
   if (unparsedNameLength == 0) {
     return;
   }
 
-  PUNICODE_STRING FileName = &IrpSp->FileObject->FileName;
-  USHORT fileNameLength = FileName->Length;
-  USHORT ecpNameLength = ecpContext->Name.Length;
+  FileName = &IrpSp->FileObject->FileName;
+  fileNameLength = FileName->Length;
+  ecpNameLength = ecpContext->Name.Length;
   if (unparsedNameLength > ecpNameLength ||
       unparsedNameLength > fileNameLength) {
     return;
   }
 
-  PWSTR unparsedNameInFileObject = (PWSTR)RtlOffsetToPointer(
+  unparsedNameInFileObject = (PWSTR)RtlOffsetToPointer(
       FileName->Buffer, fileNameLength - unparsedNameLength);
-  UNICODE_STRING unparsedNameInFileObjectUS =
+  unparsedNameInFileObjectUS =
       DokanWrapUnicodeString(unparsedNameInFileObject, unparsedNameLength);
 
-  PWSTR unparsedNameInEcp = (PWSTR)RtlOffsetToPointer(
+  unparsedNameInEcp = (PWSTR)RtlOffsetToPointer(
       ecpContext->Name.Buffer, ecpNameLength - unparsedNameLength);
-  UNICODE_STRING unparsedNameInEcpUS =
+  unparsedNameInEcpUS =
       DokanWrapUnicodeString(unparsedNameInEcp, unparsedNameLength);
 
   if (RtlEqualUnicodeString(&unparsedNameInFileObjectUS, &unparsedNameInEcpUS,
@@ -395,6 +402,8 @@ Return Value:
   PAGED_CODE();
 
   __try {
+    BOOLEAN isNetworkFileSystem;
+    BOOLEAN allocateCcb;
     fileObject = RequestContext->IrpSp->FileObject;
     if (fileObject == NULL) {
       status = STATUS_INVALID_PARAMETER;
@@ -432,7 +441,7 @@ Return Value:
     FixFileNameForReparseMountPoint(RequestContext->Dcb->MountPoint,
                                     RequestContext->Irp, RequestContext->IrpSp);
 
-    BOOLEAN isNetworkFileSystem = (RequestContext->Dcb->VolumeDeviceType ==
+    isNetworkFileSystem = (RequestContext->Dcb->VolumeDeviceType ==
                                    FILE_DEVICE_NETWORK_FILE_SYSTEM);
 
     if (!isNetworkFileSystem) {
@@ -627,7 +636,7 @@ Return Value:
     // Remove possible UNCName prefix
     if (RequestContext->Dcb->UNCName != NULL) {
       UNICODE_STRING fileNameUS =
-          DokanWrapUnicodeString(fileName, fileNameLength);
+          DokanWrapUnicodeString(fileName, (USHORT)fileNameLength);
       if (RtlPrefixUnicodeString(RequestContext->Dcb->UNCName, &fileNameUS,
                                  /*CaseInSensitive=*/TRUE)) {
         fileNameLength -= RequestContext->Dcb->UNCName->Length;
@@ -658,7 +667,7 @@ Return Value:
       __leave;
     }
 
-    BOOLEAN allocateCcb = TRUE;
+    allocateCcb = TRUE;
     if (fileObject->FsContext2 != NULL) {
       // Check if we are retrying a create we started before.
       ccb = fileObject->FsContext2;
@@ -1027,11 +1036,12 @@ Return Value:
           eventContext->Operation.Create.ShareAccess);
 
       if (!NT_SUCCESS(status)) {
+        NTSTATUS OplockBreakStatus;
 
         DOKAN_LOG_FINE_IRP(RequestContext, "DokanCheckShareAccess failed with 0x%x %s",
                          status, DokanGetNTSTATUSStr(status));
 
-        NTSTATUS OplockBreakStatus = STATUS_SUCCESS;
+        OplockBreakStatus = STATUS_SUCCESS;
 
         //
         //  If we got a sharing violation try to break outstanding
@@ -1297,6 +1307,7 @@ Return Value:
 
 VOID DokanCompleteCreate(__in PREQUEST_CONTEXT RequestContext,
                          __in PEVENT_INFORMATION EventInfo) {
+  ULONG options;
   PDokanCCB ccb = NULL;
   PDokanFCB fcb = NULL;
 
@@ -1318,7 +1329,7 @@ VOID DokanCompleteCreate(__in PREQUEST_CONTEXT RequestContext,
       RequestContext->IrpSp->FileObject,
       DokanGetCreateInformationStr(RequestContext->Irp->IoStatus.Information));
 
-  ULONG options = RequestContext->IrpSp->Parameters.Create.Options;
+  options = RequestContext->IrpSp->Parameters.Create.Options;
 
   // If volume is write-protected, we subbed FILE_OPEN for FILE_OPEN_IF
   // before call to userland in DokanDispatchCreate.

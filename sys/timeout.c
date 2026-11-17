@@ -123,10 +123,11 @@ ReleaseTimeoutPendingIrp(__in PDokanDCB Dcb) {
 
   shouldUnmount = !vcb->IsKeepaliveActive && !IsListEmpty(&completeList);
   while (!IsListEmpty(&completeList)) {
+    PIO_STACK_LOCATION irpSp;
     listHead = RemoveHeadList(&completeList);
     irpEntry = CONTAINING_RECORD(listHead, IRP_ENTRY, ListEntry);
     irp = irpEntry->RequestContext.Irp;
-    PIO_STACK_LOCATION irpSp = irpEntry->RequestContext.IrpSp;
+    irpSp = irpEntry->RequestContext.IrpSp;
     DOKAN_LOG_(
         "Cancel [%s][%s] FileObject=%p",
         DokanGetMajorFunctionStr(irpSp->MajorFunction),

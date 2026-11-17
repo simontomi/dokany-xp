@@ -38,6 +38,8 @@ DokanDispatchWrite(__in PREQUEST_CONTEXT RequestContext) {
   BOOLEAN fcbLocked = FALSE;
 
   __try {
+    LARGE_INTEGER safeEventLength;
+    DOKAN_LOGGER logger;
     fileObject = RequestContext->IrpSp->FileObject;
     DOKAN_LOG_FINE_IRP(
         RequestContext,
@@ -61,8 +63,8 @@ DokanDispatchWrite(__in PREQUEST_CONTEXT RequestContext) {
       __leave;
     }
 
-    DOKAN_INIT_LOGGER(logger, RequestContext->DeviceObject->DriverObject,
-                      IRP_MJ_WRITE);
+    logger.DriverObject = RequestContext->DeviceObject->DriverObject;
+    logger.MajorFunctionCode = IRP_MJ_WRITE;
 
     ccb = fileObject->FsContext2;
     ASSERT(ccb != NULL);
@@ -135,7 +137,6 @@ DokanDispatchWrite(__in PREQUEST_CONTEXT RequestContext) {
     DokanFCBLockRO(fcb);
     fcbLocked = TRUE;
 
-    LARGE_INTEGER safeEventLength;
     safeEventLength.QuadPart =
         sizeof(EVENT_CONTEXT) + RequestContext->IrpSp->Parameters.Write.Length +
                   fcb->FileName.Length;

@@ -28,11 +28,12 @@ with this program. If not, see <http://www.gnu.org/licenses/>.
 NTSTATUS FillNameInformation(__in PREQUEST_CONTEXT RequestContext,
                              __in PDokanFCB Fcb,
                              __in PFILE_NAME_INFORMATION NameInfo) {
+  BOOLEAN isNetworkDevice;
   PUNICODE_STRING fileName = &Fcb->FileName;
   PCHAR dest = (PCHAR)&NameInfo->FileName;
   NameInfo->FileNameLength = fileName->Length;
 
-  BOOLEAN isNetworkDevice = (RequestContext->Dcb->VolumeDeviceType ==
+  isNetworkDevice = (RequestContext->Dcb->VolumeDeviceType ==
                              FILE_DEVICE_NETWORK_FILE_SYSTEM);
   if (isNetworkDevice) {
     PUNICODE_STRING devicePath = RequestContext->Dcb->UNCName->Length
@@ -268,6 +269,7 @@ VOID DokanCompleteQueryInformation(__in PREQUEST_CONTEXT RequestContext,
              FileStandardInformation ||
          RequestContext->IrpSp->Parameters.QueryFile.FileInformationClass ==
              FileNetworkOpenInformation)) {
+      BOOLEAN deletePending;
 
       FSRTL_ADVANCED_FCB_HEADER *header =
           RequestContext->IrpSp->FileObject->FsContext;
@@ -276,7 +278,7 @@ VOID DokanCompleteQueryInformation(__in PREQUEST_CONTEXT RequestContext,
 
       ASSERT(header != NULL);
 
-      BOOLEAN deletePending = DokanFCBIsPendingDeletion(fcb);
+      deletePending = DokanFCBIsPendingDeletion(fcb);
       if (RequestContext->IrpSp->Parameters.QueryFile.FileInformationClass ==
           FileAllInformation) {
         PFILE_ALL_INFORMATION allInfo = (PFILE_ALL_INFORMATION)buffer;
@@ -380,6 +382,7 @@ VOID FlushIfDescendant(__in PREQUEST_CONTEXT RequestContext,
 VOID FlushAllCachedFcb(__in PREQUEST_CONTEXT RequestContext,
                        __in PDokanFCB FcbRelatedTo,
                        __in_opt PFILE_OBJECT FileObject) {
+  PDokanFCB *fcbInTable;
   if (FcbRelatedTo == NULL) {
     return;
   }
@@ -395,7 +398,7 @@ VOID FlushAllCachedFcb(__in PREQUEST_CONTEXT RequestContext,
 
   DokanVCBLockRW(FcbRelatedTo->Vcb);
 
-  for (PDokanFCB* fcbInTable = (PDokanFCB*)RtlEnumerateGenericTableAvl(
+  for (fcbInTable = (PDokanFCB*)RtlEnumerateGenericTableAvl(
 	  &RequestContext->Vcb->FcbTable, /*Restart=*/TRUE);
 	  fcbInTable != NULL;
 	  fcbInTable = (PDokanFCB*)RtlEnumerateGenericTableAvl(
@@ -415,6 +418,7 @@ ULONG PopulateRenameEventInformations(__in PREQUEST_CONTEXT RequestContext,
                                       __in PDokanFCB Fcb,
                                       __in_opt PEVENT_CONTEXT EventContext,
                                       __in_opt PDokanFCB RootDirectoryFcb) {
+  ULONG renameInfoFileNameLength;
   ULONG fileNameLength = 0;
   PFILE_OBJECT targetFileObject =
       RequestContext->IrpSp->Parameters.SetFile.FileObject;
@@ -434,7 +438,7 @@ ULONG PopulateRenameEventInformations(__in PREQUEST_CONTEXT RequestContext,
   }
 
   // It is valid to provide a FileName ending with '\'. Clean them up.
-  ULONG renameInfoFileNameLength = renameInfo->FileNameLength;
+  renameInfoFileNameLength = renameInfo->FileNameLength;
   while (renameInfoFileNameLength > sizeof(WCHAR) &&
          renameInfo->FileName[renameInfoFileNameLength / sizeof(WCHAR) - 1] ==
              L'\\')
@@ -573,9 +577,11 @@ DokanDispatchSetInformation(__in PREQUEST_CONTEXT RequestContext) {
       }
     } break;
     case FileDispositionInformationEx: {
-      PFILE_DISPOSITION_INFORMATION_EX dispositionexInfo =
+      BOOLEAN deleteRequested;
+      PFILE_DISPOSITION_INFORMATION_EX dispositionexInfo;
+      dispositionexInfo =
           (PFILE_DISPOSITION_INFORMATION_EX)buffer;
-      BOOLEAN deleteRequested =
+      deleteRequested =
           (dispositionexInfo->Flags & FILE_DISPOSITION_DELETE) != 0;
       if (deleteRequested == DokanFCBIsPendingDeletion(fcb)) {
         RequestContext->IrpSp->FileObject->DeletePending = deleteRequested;
@@ -634,12 +640,14 @@ DokanDispatchSetInformation(__in PREQUEST_CONTEXT RequestContext) {
        */
       targetFileObject = RequestContext->IrpSp->Parameters.SetFile.FileObject;
       if (targetFileObject != NULL) {
+        PDokanCCB targetCcb;
+        PDokanFCB targetFcb;
         DOKAN_LOG_FINE_IRP(RequestContext,
                            "FileObject Specified so perform flush %p \"%wZ\"",
                            targetFileObject, &(targetFileObject->FileName));
-        PDokanCCB targetCcb = (PDokanCCB)targetFileObject->FsContext2;
+        targetCcb = (PDokanCCB)targetFileObject->FsContext2;
         ASSERT(targetCcb != NULL);
-        PDokanFCB targetFcb = (PDokanFCB)targetCcb->Fcb;
+        targetFcb = (PDokanFCB)targetCcb->Fcb;
         FlushAllCachedFcb(RequestContext, targetFcb, targetFileObject);
       }
       FlushAllCachedFcb(RequestContext, fcb, fileObject);
@@ -665,10 +673,12 @@ DokanDispatchSetInformation(__in PREQUEST_CONTEXT RequestContext) {
     eventLength += RequestContext->IrpSp->Parameters.SetFile.Length;
 
     if (isRename) {
+      ULONG renameFileNameLength;
       PFILE_RENAME_INFORMATION renameInfo =
           (PFILE_RENAME_INFORMATION)
               RequestContext->Irp->AssociatedIrp.SystemBuffer;
       if (renameInfo->RootDirectory != NULL) {
+        PDokanCCB rootDirectoryCcb;
         // Relative rename
         status = ObReferenceObjectByHandle(
             renameInfo->RootDirectory, /*DesiredAccess=*/0, *IoFileObjectType,
@@ -680,7 +690,7 @@ DokanDispatchSetInformation(__in PREQUEST_CONTEXT RequestContext) {
           __leave;
         }
         // TODO(adrienj): Create a helper to get FCB directly from FsContext2
-        PDokanCCB rootDirectoryCcb = (PDokanCCB)rootDirObject->FsContext2;
+        rootDirectoryCcb = (PDokanCCB)rootDirObject->FsContext2;
         if (DokanCheckCCB(RequestContext, rootDirectoryCcb)) {
           rootDirectoryFcb = (PDokanFCB)rootDirectoryCcb->Fcb;
           ASSERT(rootDirectoryFcb != NULL);
@@ -701,7 +711,7 @@ DokanDispatchSetInformation(__in PREQUEST_CONTEXT RequestContext) {
         }
       }
       // This is a dry run just to get the needed size to AllocateEventContext
-      ULONG renameFileNameLength = PopulateRenameEventInformations(
+      renameFileNameLength = PopulateRenameEventInformations(
           RequestContext, fcb, NULL, rootDirectoryFcb);
       if (renameFileNameLength > MAXULONG - eventLength) {
         DOKAN_LOG_FINE_IRP(RequestContext,
@@ -787,16 +797,18 @@ DokanDispatchSetInformation(__in PREQUEST_CONTEXT RequestContext) {
 //
 // Returns -1 if no '\\' is found,
 LONG GetParentDirectoryEndingIndex(PUNICODE_STRING fileName) {
+  USHORT lastIndex;
+  LONG index;
   if (fileName->Length == 0) {
     return -1;
   }
   // If the path ends with L'\\' (in which case, this is a directory, that last
   // '\\' character can be ignored.)
-  USHORT lastIndex = fileName->Length / sizeof(WCHAR) - 1;
+  lastIndex = fileName->Length / sizeof(WCHAR) - 1;
   if (fileName->Buffer[lastIndex] == L'\\') {
     lastIndex--;
   }
-  for (LONG index = lastIndex; index >= 0; index--) {
+  for (index = lastIndex; index >= 0; index--) {
     if (fileName->Buffer[index] == L'\\') {
       return index;
     }
@@ -809,11 +821,12 @@ LONG GetParentDirectoryEndingIndex(PUNICODE_STRING fileName) {
 // files/folders that are in the same directory.
 BOOLEAN IsInSameDirectory(PUNICODE_STRING fileName1,
                           PUNICODE_STRING fileName2) {
+  LONG i;
   LONG parentEndingIndex = GetParentDirectoryEndingIndex(fileName1);
   if (parentEndingIndex != GetParentDirectoryEndingIndex(fileName2)) {
     return FALSE;
   }
-  for (LONG i = 0; i < parentEndingIndex; i++) {
+  for (i = 0; i < parentEndingIndex; i++) {
     // TODO(ttdinhtrong): This code assumes case sensitive, which is not always
     // true. As of now we do not know if the user is in case sensitive or case
     // insensitive mode.
@@ -893,11 +906,12 @@ VOID DokanCompleteSetInformation(__in PREQUEST_CONTEXT RequestContext,
     }
     case FileRenameInformation:
     case FileRenameInformationEx: {
+      PVOID buffer;
       // Process rename
       oldFileName =
           DokanWrapUnicodeString(fcb->FileName.Buffer, fcb->FileName.Length);
       // Copy new file name
-      PVOID buffer = DokanAllocZero(EventInfo->BufferLength + sizeof(WCHAR));
+      buffer = DokanAllocZero(EventInfo->BufferLength + sizeof(WCHAR));
       if (buffer == NULL) {
         RequestContext->Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
         __leave;

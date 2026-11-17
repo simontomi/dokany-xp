@@ -101,6 +101,7 @@ NTSTATUS DokanOplockRequest(__in PREQUEST_CONTEXT RequestContext) {
 
   PREQUEST_OPLOCK_INPUT_BUFFER inputBuffer = NULL;
   ULONG outputBufferLength;
+  DOKAN_LOGGER logger;
 
   PAGED_CODE();
 
@@ -130,7 +131,8 @@ NTSTATUS DokanOplockRequest(__in PREQUEST_CONTEXT RequestContext) {
     DOKAN_LOG_FINE_IRP(RequestContext, "Invalid Vcb or wrong type");
     return STATUS_INVALID_PARAMETER;
   }
-  DOKAN_INIT_LOGGER(logger, vcb->DeviceObject->DriverObject, 0);
+  logger.DriverObject = vcb->DeviceObject->DriverObject;
+  logger.MajorFunctionCode = 0;
 
   dcb = vcb->Dcb;
   if (dcb == NULL || dcb->Identifier.Type != DCB) {
@@ -171,6 +173,8 @@ NTSTATUS DokanOplockRequest(__in PREQUEST_CONTEXT RequestContext) {
   //  Use a try finally to free the Fcb/Vcb
   //
   try {
+    ULONG level;
+    ULONG flags;
 
     //
     //  We grab the Fcb exclusively for oplock requests, shared for oplock
@@ -247,8 +251,8 @@ NTSTATUS DokanOplockRequest(__in PREQUEST_CONTEXT RequestContext) {
       __leave;
     }
 
-    ULONG level = 0;
-    ULONG flags = 0;
+    level = 0;
+    flags = 0;
     if (fsControlCode == FSCTL_REQUEST_OPLOCK) {
       level = inputBuffer->RequestedOplockLevel;
       flags = inputBuffer->Flags;
@@ -340,6 +344,8 @@ DokanVolumeUserFsRequest(__in PREQUEST_CONTEXT RequestContext) {
     }
 
     case FSCTL_NOTIFY_PATH: {
+      UNICODE_STRING receivedBuffer;
+      NTSTATUS status;
       PDOKAN_NOTIFY_PATH_INTERMEDIATE pNotifyPath = NULL;
       GET_IRP_NOTIFY_PATH_INTERMEDIATE_OR_RETURN(RequestContext->Irp,
                                                  pNotifyPath);
@@ -359,7 +365,6 @@ DokanVolumeUserFsRequest(__in PREQUEST_CONTEXT RequestContext) {
         return DokanLogError(&logger, STATUS_INVALID_PARAMETER,
                              L"Received FSCTL_NOTIFY_PATH with no FCB.");
       }
-      UNICODE_STRING receivedBuffer;
       receivedBuffer.Length = pNotifyPath->Length;
       receivedBuffer.MaximumLength = pNotifyPath->Length;
       receivedBuffer.Buffer = pNotifyPath->Buffer;
@@ -369,7 +374,7 @@ DokanVolumeUserFsRequest(__in PREQUEST_CONTEXT RequestContext) {
                          pNotifyPath->CompletionFilter, pNotifyPath->Action,
                          receivedBuffer.Length, &receivedBuffer);
       DokanFCBLockRO(fcb);
-      NTSTATUS status = DokanNotifyReportChange0(
+      status = DokanNotifyReportChange0(
           RequestContext, fcb, &receivedBuffer, pNotifyPath->CompletionFilter,
           pNotifyPath->Action);
       DokanFCBUnlock(fcb);
@@ -508,6 +513,10 @@ NTSTATUS PullEvents(__in PREQUEST_CONTEXT RequestContext,
 
 
 NTSTATUS DokanProcessAndPullEvents(__in PREQUEST_CONTEXT RequestContext) {
+  LARGE_INTEGER timeout;
+  PLIST_ENTRY listEntry;
+  PEVENT_INFORMATION eventInfo;
+  ULONG waitTimeoutMs;
   // 1 - Complete the optional event.
   // Main pull thread will not have events to complete when:
   // * The file system just started and it is the first pull.
@@ -532,11 +541,10 @@ NTSTATUS DokanProcessAndPullEvents(__in PREQUEST_CONTEXT RequestContext) {
   // 3 - Flag the device as having workers starting to pull events.
   RequestContext->Vcb->HasEventWait = TRUE;
 
-  PEVENT_INFORMATION eventInfo =
+  eventInfo =
       (PEVENT_INFORMATION)(RequestContext->Irp->AssociatedIrp.SystemBuffer);
-  ULONG waitTimeoutMs =
+  waitTimeoutMs =
       status == STATUS_BUFFER_TOO_SMALL ? 0 : eventInfo->PullEventTimeoutMs;
-  LARGE_INTEGER timeout;
   if (waitTimeoutMs) {
     DokanQuerySystemTime(&timeout);
     timeout.QuadPart += (LONGLONG)waitTimeoutMs * 10000; // Ms to 100 nano
@@ -544,9 +552,15 @@ NTSTATUS DokanProcessAndPullEvents(__in PREQUEST_CONTEXT RequestContext) {
 
   // 4 - Wait for new event indefinitely if we are the main pull thread
   // or wait for the requested time.
-  PLIST_ENTRY listEntry;
+#if defined(DOKAN_XP_COMPAT) && (NTDDI_VERSION < NTDDI_VISTA)
+  // XP: KeRundownQueue (unmount) does not wake the waiting threads.
+  listEntry = DokanXpRemoveQueueUntilUnmount(
+      &RequestContext->Dcb->NotifyIrpEventQueue,
+      waitTimeoutMs ? &timeout : NULL, RequestContext->Vcb);
+#else
   KeRemoveQueueEx(&RequestContext->Dcb->NotifyIrpEventQueue, KernelMode, TRUE,
                   waitTimeoutMs ? &timeout : NULL, &listEntry, 1);
+#endif
   if (listEntry != &RequestContext->Dcb->NotifyIrpEventQueueList) {
     // Here we got interrupted: Alert / Timeout.
     // In that case listEntry is an NTSTATUS (See KeRemoveQueue doc).
@@ -631,13 +645,15 @@ BOOLEAN MatchDokanDCBType(__in PREQUEST_CONTEXT RequestContext,
 PCHAR CreateSetReparsePointRequest(PREQUEST_CONTEXT RequestContext,
                                    PUNICODE_STRING SymbolicLinkName,
                                    PULONG Length) {
+  USHORT mountPointReparsePathLength;
+  PREPARSE_DATA_BUFFER reparseData;
   UNREFERENCED_PARAMETER(RequestContext);
-  USHORT mountPointReparsePathLength =
+  mountPointReparsePathLength =
       SymbolicLinkName->Length + sizeof(WCHAR) /* "\\" */;
   *Length =
       FIELD_OFFSET(REPARSE_DATA_BUFFER, MountPointReparseBuffer.PathBuffer) +
       mountPointReparsePathLength + sizeof(WCHAR) + sizeof(WCHAR);
-  PREPARSE_DATA_BUFFER reparseData = DokanAllocZero(*Length);
+  reparseData = DokanAllocZero(*Length);
   if (!reparseData) {
     DOKAN_LOG_FINE_IRP(RequestContext, "Failed to allocate reparseData buffer");
     *Length = 0;
@@ -665,9 +681,10 @@ PCHAR CreateSetReparsePointRequest(PREQUEST_CONTEXT RequestContext,
 
 PCHAR CreateRemoveReparsePointRequest(PREQUEST_CONTEXT RequestContext,
                                       PULONG Length) {
+  PREPARSE_DATA_BUFFER reparseData;
   UNREFERENCED_PARAMETER(RequestContext);
   *Length = REPARSE_GUID_DATA_BUFFER_HEADER_SIZE;
-  PREPARSE_DATA_BUFFER reparseData =
+  reparseData =
       DokanAllocZero(sizeof(REPARSE_DATA_BUFFER));
   if (!reparseData) {
     DOKAN_LOG_FINE_IRP(RequestContext, "Failed to allocate reparseGuidData buffer");
@@ -681,15 +698,21 @@ PCHAR CreateRemoveReparsePointRequest(PREQUEST_CONTEXT RequestContext,
 NTSTATUS SendDirectoryFsctl(PREQUEST_CONTEXT RequestContext,
                             PUNICODE_STRING Path, ULONG Code, PCHAR Input,
                             ULONG Length) {
-  UNREFERENCED_PARAMETER(RequestContext);
-  HANDLE handle = 0;
-  PUNICODE_STRING directoryStr = NULL;
-  NTSTATUS status = STATUS_SUCCESS;
-  PIRP topLevelIrp = NULL;
+  HANDLE handle;
+  PUNICODE_STRING directoryStr;
+  NTSTATUS status;
+  PIRP topLevelIrp;
   DOKAN_INIT_LOGGER(logger, RequestContext->DeviceObject->DriverObject,
                     IRP_MJ_FILE_SYSTEM_CONTROL);
+  UNREFERENCED_PARAMETER(RequestContext);
+  handle = 0;
+  directoryStr = NULL;
+  status = STATUS_SUCCESS;
+  topLevelIrp = NULL;
 
   __try {
+    IO_STATUS_BLOCK ioStatusBlock;
+    OBJECT_ATTRIBUTES objectAttributes;
     // Convert Dcb MountPoint \DosDevices\C:\foo to \??\C:\foo
     directoryStr = ChangePrefix(Path, &g_DosDevicesPrefix, TRUE /*HasPrefix*/,
                                 &g_ObjectManagerPrefix);
@@ -706,8 +729,6 @@ NTSTATUS SendDirectoryFsctl(PREQUEST_CONTEXT RequestContext,
     }
 
     // Open the directory as \??\C:\foo
-    IO_STATUS_BLOCK ioStatusBlock;
-    OBJECT_ATTRIBUTES objectAttributes;
     InitializeObjectAttributes(&objectAttributes, directoryStr,
                                OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL,
                                NULL);
@@ -751,6 +772,10 @@ NTSTATUS SendDirectoryFsctl(PREQUEST_CONTEXT RequestContext,
 // TODO(adrienj): Change DDbgPrint in this function to DokanLogInfo when we will
 // better logging.
 NTSTATUS DokanMountVolume(__in PREQUEST_CONTEXT RequestContext) {
+  PDEVICE_OBJECT deviceObject;
+  PDEVICE_OBJECT lowerDeviceObject;
+  BOOLEAN isNetworkFileSystem;
+  BOOLEAN isDriveLetter;
   PDokanDCB dcb = NULL;
   PDokanVCB vcb = NULL;
   PVPB vpb = NULL;
@@ -766,10 +791,10 @@ NTSTATUS DokanMountVolume(__in PREQUEST_CONTEXT RequestContext) {
   DOKAN_INIT_LOGGER(logger, driverObject, IRP_MJ_FILE_SYSTEM_CONTROL);
   DOKAN_LOG_FINE_IRP(RequestContext, "Mounting disk device.");
 
-  PDEVICE_OBJECT deviceObject =
+  deviceObject =
       RequestContext->IrpSp->Parameters.MountVolume.DeviceObject;
   dcb = deviceObject->DeviceExtension;
-  PDEVICE_OBJECT lowerDeviceObject = NULL;
+  lowerDeviceObject = NULL;
   while (!MatchDokanDCBType(RequestContext, dcb, &logger,
                             /*LogFailures=*/!hasMountedAnyDisk)) {
     PDEVICE_OBJECT parentDeviceObject =
@@ -813,7 +838,7 @@ NTSTATUS DokanMountVolume(__in PREQUEST_CONTEXT RequestContext) {
                          L"This is a remount try of the device.");
   }
 
-  BOOLEAN isNetworkFileSystem =
+  isNetworkFileSystem =
       (dcb->VolumeDeviceType == FILE_DEVICE_NETWORK_FILE_SYSTEM);
 
   DokanLogInfo(&logger,
@@ -914,7 +939,7 @@ NTSTATUS DokanMountVolume(__in PREQUEST_CONTEXT RequestContext) {
   // Start check thread
   DokanStartCheckThread(dcb);
 
-  BOOLEAN isDriveLetter = IsMountPointDriveLetter(dcb->MountPoint);
+  isDriveLetter = IsMountPointDriveLetter(dcb->MountPoint);
   // Create mount point for the volume
   if (dcb->UseMountManager) {
     BOOLEAN autoMountStateBackup = TRUE;
