@@ -40,6 +40,16 @@ files; nothing of the upstream Visual Studio build changes.
 The x64 driver must be signed to load: test signing (`bcdedit /set testsigning
 on`) and a test certificate, or a Code Integrity patch.
 
+Every build is stamped (2026-11-18): `r<n> (<hash>)`, where `n` counts the
+commits since `v2.3.1.1000` and `hash` is the short commit hash (`-dirty` after
+it when the tree had changes). `build.cmd` writes it to `xp\xp_build.h`
+(generated, not in git) and `xp\out\<arch>\build.txt`. Both files carry it in
+their ProductVersion (`2.3.1.1000 XP port r5 (1a2b3c4)`), and the driver
+answers it for the one that is loaded: `DokanXpDriverBuild` in the library
+(`FSCTL_XP_GET_BUILD` to the global device; a driver from before the stamp
+fails it). After an update the file on disk can be newer than the driver that
+runs until the next start of Windows; this tells the two apart.
+
 ## What changed for XP
 
 Everything is in four files and a few `#ifdef DOKAN_XP_COMPAT` blocks:
