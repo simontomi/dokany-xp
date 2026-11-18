@@ -25,6 +25,10 @@ with this program. If not, see <http://www.gnu.org/licenses/>.
 #include "util/mountmgr.h"
 #include "util/irp_buffer_helper.h"
 #include "util/str.h"
+#ifdef DOKAN_XP_COMPAT
+// XP port: DOKAN_XP_BUILD, the build stamp xp\build.cmd generates.
+#include "../xp/xp_build.h"
+#endif
 
 #include <wdmsec.h>
 
@@ -446,6 +450,21 @@ DokanGlobalUserFsRequest(__in PREQUEST_CONTEXT RequestContext) {
       *version = (ULONG)DOKAN_DRIVER_VERSION;
       return STATUS_SUCCESS;
     };
+
+#ifdef DOKAN_XP_COMPAT
+    case FSCTL_XP_GET_BUILD: {
+      // XP port: after an update the driver file on disk can be of another
+      // build than this driver, which runs until the next start of Windows.
+      PCHAR build = (PCHAR)PrepareOutputWithSize(
+          RequestContext->Irp, (ULONG)sizeof(DOKAN_XP_BUILD),
+          /*SetInformationOnFailure=*/FALSE);
+      if (build == NULL) {
+        return STATUS_BUFFER_TOO_SMALL;
+      }
+      RtlCopyMemory(build, DOKAN_XP_BUILD, sizeof(DOKAN_XP_BUILD));
+      return STATUS_SUCCESS;
+    };
+#endif
 
     case FSCTL_MOUNTPOINT_CLEANUP:
       RemoveSessionDevices(RequestContext, GetCurrentSessionId(RequestContext));

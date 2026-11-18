@@ -61,6 +61,7 @@ ReleasePS
 *.wixpdb
 # XP build (WDK 7.1)
 /xp/out/
+/xp/xp_build.h
 /xp/**/obj*/
 /xp/**/build*.log
 /xp/**/build*.err

@@ -494,6 +494,12 @@ typedef struct _DOKAN_XP_CACHE_INFO {
 #define FSCTL_XP_PURGE_CACHE \
   CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 0x8E0, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
+// XP port: the build of the running driver (sent to the global device), the
+// text xp\build.cmd stamps into it: "r3 (9f8e7d6)" and a terminating null.
+// No input. A driver from before the builds fails it (invalid request).
+#define FSCTL_XP_GET_BUILD \
+  CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 0x8E1, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
 typedef struct _EVENT_DRIVER_INFO {
   ULONG DriverVersion;
   ULONG Status;

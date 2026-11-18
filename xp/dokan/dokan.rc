@@ -1,2 +1,4 @@
-// XP build wrapper: the DLL version resource
+// XP build wrapper: the DLL version resource (with the build stamp of
+// xp\build.cmd: DOKAN_XP_BUILD).
+#include "../xp_build.h"
 #include "../../dokan/dokan.rc"

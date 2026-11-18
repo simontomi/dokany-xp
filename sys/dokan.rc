@@ -43,7 +43,11 @@ BEGIN
             VALUE "LegalCopyright", "Copyright (C) 2021"
             VALUE "OriginalFilename", "dokan.sys"
             VALUE "ProductName", "Dokan"
+#ifdef DOKAN_XP_BUILD
+            VALUE "ProductVersion", "2.3.1.1000 XP port " DOKAN_XP_BUILD
+#else
             VALUE "ProductVersion", "2.3.1.1000"
+#endif
         END
     END
     BLOCK "VarFileInfo"

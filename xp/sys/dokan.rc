@@ -1,3 +1,5 @@
 // XP build wrapper: the driver's version resource and its event-log message table
+// (with the build stamp of xp\build.cmd: DOKAN_XP_BUILD).
+#include "../xp_build.h"
 #include "../../sys/dokan.rc"
 #include "../../sys/dokanfs_msg.rc"

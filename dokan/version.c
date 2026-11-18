@@ -25,6 +25,29 @@ with this program. If not, see <http://www.gnu.org/licenses/>.
 
 ULONG DOKANAPI DokanVersion() { return DOKAN_VERSION; }
 
+// XP port: the build of the loaded driver (FSCTL_XP_GET_BUILD), "r3 (9f8e7d6)".
+BOOL DOKANAPI DokanXpDriverBuild(LPWSTR Build, ULONG BuildChars) {
+  CHAR build[64];
+  ULONG ret = 0;
+
+  if (Build == NULL || BuildChars == 0) {
+    return FALSE;
+  }
+  Build[0] = L'\0';
+  ZeroMemory(build, sizeof(build));
+  // One byte short of the buffer: the answer always ends with a null.
+  if (!SendToDevice(DOKAN_GLOBAL_DEVICE_NAME, FSCTL_XP_GET_BUILD,
+                    NULL,              // InputBuffer
+                    0,                 // InputLength
+                    build,             // OutputBuffer
+                    sizeof(build) - 1, // OutputLength
+                    &ret)) {
+    DbgPrintW(L"FSCTL_XP_GET_BUILD failed (a driver from before the builds)\n");
+    return FALSE;
+  }
+  return MultiByteToWideChar(CP_ACP, 0, build, -1, Build, (int)BuildChars) > 0;
+}
+
 ULONG DOKANAPI DokanDriverVersion() {
   ULONG version = 0;
   ULONG ret = 0;

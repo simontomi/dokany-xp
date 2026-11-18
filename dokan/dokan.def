@@ -38,3 +38,4 @@ DokanCloseHandle
 DokanXpSetFileCache
 DokanXpPurgeCache
 DokanXpReadCacheActive
+DokanXpDriverBuild

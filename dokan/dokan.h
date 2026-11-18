@@ -1162,6 +1162,21 @@ BOOL DOKANAPI DokanXpPurgeCache(_In_ DOKAN_HANDLE DokanInstance,
  */
 BOOL DOKANAPI DokanXpReadCacheActive(_In_ DOKAN_HANDLE DokanInstance);
 
+/**
+ * \brief XP port: the build of the loaded driver.
+ *
+ * The text xp\build.cmd stamps into the driver, "r3 (9f8e7d6)": the number of
+ * commits since v2.3.1.1000 and the short commit hash ("-dirty" after the hash
+ * when the tree had changes). After an update the driver file on disk can be
+ * of another build than the driver that runs until the next start of Windows;
+ * the files carry theirs in ProductVersion ("2.3.1.1000 XP port r3 (9f8e7d6)").
+ *
+ * \param Build Receives the build, null-terminated.
+ * \param BuildChars The size of Build in characters.
+ * \return \c FALSE if the driver does not answer (one from before the builds).
+ */
+BOOL DOKANAPI DokanXpDriverBuild(_Out_ LPWSTR Build, _In_ ULONG BuildChars);
+
 /**@}*/
 
 /**
