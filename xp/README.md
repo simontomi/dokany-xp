@@ -178,6 +178,55 @@ WinRM shell, whose memory cap makes `fc` fail with "Not enough quota"):
 - The stalls of the VMs (Vista: a 64-bit thread calling `NtCancelIoFile` in a
   loop) were not looked at again; the VMs broke for other reasons.
 
+## The kernel read cache in a nutshell, and what it gains (2026-11-18)
+
+**Without it** (upstream Dokany) every read of a program goes the whole
+way: the I/O manager hands it to the Dokany driver, the driver queues it, a
+thread of the file system process pulls it, the file system answers from
+wherever it keeps the data, and the reply goes back the same way. Windows
+caches nothing of a Dokany volume, so reading the same 512 bytes a second
+time costs the same round trip again: about 66 µs on a Core 2 Duo, against
+about 7 µs for a file on a local disk or on an SMB share, which Windows does
+cache. A program that does hundreds of thousands of small reads waits seconds
+for nothing but round trips.
+
+**With it** the driver sets up the Windows cache manager for the files the
+file system marks cacheable when it opens them (`DokanXpSetFileCache` with
+the file's size and a content id, for example its last write time). Reads of
+such a file are copied from the system cache in the kernel (fast I/O, or the
+read IRP), the way NTFS serves them; only what is not in the cache yet goes
+to user mode, as paging reads of 64 KiB (cache misses and read-ahead). The
+cached pages stay after the handles close, so the next start of a program
+finds them in memory. A marked open with another size or content id, an open
+that may write, or `DokanXpPurgeCache` drops what is cached of the file, so a
+file that changed is never served stale. It is the file system's choice which
+files to mark: files that only change through the file system itself or not
+at all suit it best.
+
+**Benchmarks.** A user-mode file system that serves a game from an SMB
+share, with its own copy of the file data on the local disk, so the file
+system answers every read from local disk either way. The game (iw4x) does
+about 200,000 reads of 512 bytes before its window appears; the time is from
+the start of the game to its main menu, windowed; hot rows are the median of 3 to 5 runs, cold rows the mean of 2. "Cold": the file system's own disk copy and the Windows cache were
+emptied before the run; "hot": everything was cached by an earlier run.
+
+| PC | Driver | Cold | Hot | Game window |
+|---|---|---|---|---|
+| Core 2 Duo T7500, Vista x64 | this port without the cache | 52.1 s | 46.3 s | ~23 s |
+| Core 2 Duo T7500, Vista x64 | this port with the cache | 37.4 s | 31.5 s | 4-10 s |
+| Core 2 Duo T7500, Vista x64 | (game on a local disk) | | 30.0 s | |
+| Core 2 Duo T7500, Vista x64 | (game read straight from the share) | | 40.2 s | |
+| Core i5 M520, Windows 7 x64 | official Dokany 2.3.1 | 42.9 s | 35.0 s | 13-14 s |
+| Core i5 M520, Windows 7 x64 | this port with the cache | 30.5 s | 23.1 s | 3-4 s |
+
+With the cache a hot start is as fast as from a local disk, and faster than
+from the share directly. A start with the Windows cache empty but the file
+system's disk copy warm (the first start after a boot) took 24.5 s on the
+Windows 7 PC, close to a hot start: the 64 KiB paging reads cost little. A
+single hot 512-byte read went from 66 µs to 6 µs (Vista x64). On Windows 7
+and newer the port's x64 driver is only test-signed: it loads in test signing
+mode or with a Code Integrity patch.
+
 ## XP behaviour differences found by testing
 
 - **Unmount hang.** At unmount the driver runs its event queue down
