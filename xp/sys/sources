@@ -43,4 +43,6 @@ SOURCES=access.c \
         util_mountmgr.c \
         util_str.c \
         xp_compat.c \
+        xp_cache.c \
+        xp_defer.c \
         dokan.rc

@@ -424,6 +424,17 @@ typedef struct _EVENT_INFORMATION {
 #define DOKAN_EVENT_ALLOW_IPC_BATCHING                              (1 << 9)
 #define DOKAN_EVENT_DRIVE_LETTER_IN_USE                             (1 << 10)
 
+// XP port additions (high bits, away from upstream's). A driver that does not
+// know them ignores them, and it never sets the matching
+// DOKAN_DRIVER_INFO_XP_* bit, so the library keeps the upstream behaviour.
+//
+// Read caching through the Windows cache manager for the files whose open the
+// file system marks cacheable (DokanXpSetFileCache in its ZwCreateFile).
+#define DOKAN_EVENT_XP_READ_CACHE                                   (1 << 24)
+// The library handles a pull answered with STATUS_BUFFER_OVERFLOW (the next
+// event does not fit the output buffer): it pulls again with a larger buffer.
+#define DOKAN_EVENT_XP_PULL_RETRY                                   (1 << 25)
+
 // Non-exclusive bits that can be set in EVENT_DRIVER_INFO.Flags for the driver
 // to send back extra info about what happened during a mount attempt, whether
 // or not it succeeded.
@@ -453,6 +464,35 @@ typedef struct _EVENT_INFORMATION {
 
 // Dokan failed to set the reparse point for the mount point folder provided.
 #define DOKAN_DRIVER_INFO_SET_REPARSE_POINT_FAILED 32
+
+// XP port: the driver mounted with DOKAN_EVENT_XP_READ_CACHE on.
+#define DOKAN_DRIVER_INFO_XP_READ_CACHE 0x10000
+// XP port: the driver answers a pull whose output buffer is too small for the
+// next event (no IPC batching) with STATUS_BUFFER_OVERFLOW instead of an empty
+// pull; the ULONG at the start of the output buffer is the length needed.
+#define DOKAN_DRIVER_INFO_XP_PULL_RETRY 0x20000
+
+// XP port: the reply to a create has DOKAN_XP_CREATE_CACHEABLE in
+// Operation.Create.Flags when the file system called DokanXpSetFileCache for
+// the open; EVENT_INFORMATION.Buffer then holds a DOKAN_XP_CACHE_INFO
+// (BufferLength = sizeof(DOKAN_XP_CACHE_INFO)).
+#define DOKAN_XP_CREATE_CACHEABLE (1 << 30)
+typedef struct _DOKAN_XP_CACHE_INFO {
+  // What the file system answers as the file's size.
+  LONGLONG FileSize;
+  // Changes whenever the content the file system serves for the path changes
+  // (for example the backing file's last write time). The driver drops the cached data
+  // of a file when an open reports another size or id.
+  ULONG64 ContentId;
+} DOKAN_XP_CACHE_INFO, *PDOKAN_XP_CACHE_INFO;
+
+// XP port: drops what the cache manager holds for files of the volume (sent
+// to the disk device, like the pull ioctl). Input: the path as the file system
+// sees it (L"\\Games\\a.exe"), without a terminating null; a path that ends
+// with a backslash means every file below it; no input means every file. The
+// output (optional, a ULONG) is how many files were purged.
+#define FSCTL_XP_PURGE_CACHE \
+  CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 0x8E0, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 typedef struct _EVENT_DRIVER_INFO {
   ULONG DriverVersion;

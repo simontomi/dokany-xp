@@ -54,16 +54,31 @@ DokanFastIoCheckIfPossible(__in PFILE_OBJECT FileObject,
                            __in BOOLEAN CheckForReadOperation,
                            __out PIO_STATUS_BLOCK IoStatus,
                            __in PDEVICE_OBJECT DeviceObject) {
-  UNREFERENCED_PARAMETER(FileObject);
-  UNREFERENCED_PARAMETER(FileOffset);
-  UNREFERENCED_PARAMETER(Length);
-  UNREFERENCED_PARAMETER(Wait);
-  UNREFERENCED_PARAMETER(LockKey);
-  UNREFERENCED_PARAMETER(CheckForReadOperation);
   UNREFERENCED_PARAMETER(IoStatus);
   UNREFERENCED_PARAMETER(DeviceObject);
 
-  DOKAN_LOG_("FileObject=%p", FileObject);
+  // XP port: TRUE only for a read of a file object the cache manager serves
+  // (xp_cache.c); FALSE as before for everything else.
+  return DokanXpFastIoCheckIfPossible(FileObject, FileOffset, Length, Wait,
+                                      LockKey, CheckForReadOperation);
+}
+
+// XP port: the MDL fast read would hold the FCB lock while the cache manager
+// waits for user mode; such reads come as IRP_MN_MDL reads instead.
+FAST_IO_MDL_READ DokanXpFastIoMdlReadNotPossible;
+BOOLEAN DokanXpFastIoMdlReadNotPossible(__in PFILE_OBJECT FileObject,
+                                        __in PLARGE_INTEGER FileOffset,
+                                        __in ULONG Length, __in ULONG LockKey,
+                                        __out PMDL *MdlChain,
+                                        __out PIO_STATUS_BLOCK IoStatus,
+                                        __in PDEVICE_OBJECT DeviceObject) {
+  UNREFERENCED_PARAMETER(FileObject);
+  UNREFERENCED_PARAMETER(FileOffset);
+  UNREFERENCED_PARAMETER(Length);
+  UNREFERENCED_PARAMETER(LockKey);
+  UNREFERENCED_PARAMETER(MdlChain);
+  UNREFERENCED_PARAMETER(IoStatus);
+  UNREFERENCED_PARAMETER(DeviceObject);
   return FALSE;
 }
 
@@ -298,13 +313,19 @@ Return Value:
   FastIoDispatch.SizeOfFastIoDispatch = sizeof(FAST_IO_DISPATCH);
   FastIoDispatch.FastIoCheckIfPossible = DokanFastIoCheckIfPossible;
   // FastIoDispatch.FastIoRead = DokanFastIoRead;
-  FastIoDispatch.FastIoRead = FsRtlCopyRead;
+  // XP port: FsRtlCopyRead holds the FCB lock while a cache miss waits for
+  // user mode; DokanXpFastIoRead holds the paging I/O lock (as NTFS does).
+  // Without read caching no file object has a cache map, and both fail.
+  FastIoDispatch.FastIoRead = DokanXpFastIoRead;
+  // XP port: the size of a cacheable file without a round trip to user mode
+  // (the memory manager asks for it while it holds the FCB lock).
+  FastIoDispatch.FastIoQueryStandardInfo = DokanXpFastIoQueryStandardInfo;
   FastIoDispatch.FastIoWrite = FsRtlCopyWrite;
   FastIoDispatch.AcquireFileForNtCreateSection = DokanAcquireForCreateSection;
   FastIoDispatch.ReleaseFileForNtCreateSection = DokanReleaseForCreateSection;
   FastIoDispatch.AcquireForCcFlush = DokanAcquireForCcFlush;
   FastIoDispatch.ReleaseForCcFlush = DokanReleaseForCcFlush;
-  FastIoDispatch.MdlRead = FsRtlMdlReadDev;
+  FastIoDispatch.MdlRead = DokanXpFastIoMdlReadNotPossible;
   FastIoDispatch.MdlReadComplete = FsRtlMdlReadCompleteDev;
   FastIoDispatch.PrepareMdlWrite = FsRtlPrepareMdlWriteDev;
   FastIoDispatch.MdlWriteComplete = FsRtlMdlWriteCompleteDev;
@@ -656,9 +677,9 @@ VOID DokanLockWarn(__in const ERESOURCE *Resource,
   if (DebugInfo->ExclusiveOwnerThread != NULL) {
     DokanLogInfo(
         Logger,
-        L"Stuck trying to lock \"%wZ\" (%I64x with ERESOURCE %I64x)"
-            L" in thread %I64x at %S."
-            L" Current exclusive owner is thread %I64x"
+        L"Stuck trying to lock \"%wZ\" (%p with ERESOURCE %p)"
+            L" in thread %p at %S."
+            L" Current exclusive owner is thread %p"
             L" with outermost lock at %S.",
         ObjectName,
         ObjectPointer,
@@ -675,9 +696,9 @@ VOID DokanLockWarn(__in const ERESOURCE *Resource,
     DbgPrintEx(
         DPFLTR_IHVDRIVER_ID,
         DPFLTR_TRACE_LEVEL,
-        "Stuck trying to lock \"%wZ\" (%I64x with ERESOURCE %I64x)"
-            " in thread %I64x at %s."
-            " Current exclusive owner is thread %I64x"
+        "Stuck trying to lock \"%wZ\" (%p with ERESOURCE %p)"
+            " in thread %p at %s."
+            " Current exclusive owner is thread %p"
             " with outermost lock at %s.\n",
         ObjectName,
         ObjectPointer,
@@ -689,8 +710,8 @@ VOID DokanLockWarn(__in const ERESOURCE *Resource,
   } else {
     DokanLogInfo(
         Logger,
-        L"Stuck trying to lock \"%wZ\" (%I64x with ERESOURCE %I64x)"
-            L" in thread %I64x at %S."
+        L"Stuck trying to lock \"%wZ\" (%p with ERESOURCE %p)"
+            L" in thread %p at %S."
             L" This resource has an unknown shared lock.",
         ObjectName,
         ObjectPointer,
@@ -700,8 +721,8 @@ VOID DokanLockWarn(__in const ERESOURCE *Resource,
     DbgPrintEx(
         DPFLTR_IHVDRIVER_ID,
         DPFLTR_TRACE_LEVEL,
-        "Stuck trying to lock \"%wZ\" (%I64x with ERESOURCE %I64x)"
-            " in thread %I64x at %s."
+        "Stuck trying to lock \"%wZ\" (%p with ERESOURCE %p)"
+            " in thread %p at %s."
             " This resource has an unknown shared lock.\n",
         ObjectName,
         ObjectPointer,
@@ -714,13 +735,13 @@ VOID DokanLockWarn(__in const ERESOURCE *Resource,
 VOID DokanLockNotifyResolved(__in const ERESOURCE *Resource,
                              __in PDOKAN_LOGGER Logger) {
   DokanLogInfo(Logger,
-      L"Blocking on ERESOURCE %I64x has resolved on thread %I64x",
+      L"Blocking on ERESOURCE %p has resolved on thread %p",
       Resource,
       KeGetCurrentThread());
   DbgPrintEx(
       DPFLTR_IHVDRIVER_ID,
       DPFLTR_TRACE_LEVEL,
-      "Blocking on ERESOURCE %I64x has resolved on thread %I64x\n",
+      "Blocking on ERESOURCE %p has resolved on thread %p\n",
       Resource,
       KeGetCurrentThread());
 }

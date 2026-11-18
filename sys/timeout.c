@@ -145,11 +145,22 @@ ReleaseTimeoutPendingIrp(__in PDokanDCB Dcb) {
                                          : DOKAN_OPLOCK_DEBUG_TIMED_OUT_CREATE);
         }
       }
+      // XP port: the timeout thread never waits for a busy FCB lock
+      // (xp_defer.c); a worker thread cancels and frees the IRP entry.
+      if (DokanXpDeferTimedOutIfBusy(irpEntry,
+                                     canceled ? STATUS_CANCELLED
+                                              : STATUS_INSUFFICIENT_RESOURCES)) {
+        continue;
+      }
       DokanCancelCreateIrp(&irpEntry->RequestContext,
                            canceled ? STATUS_CANCELLED
                                     : STATUS_INSUFFICIENT_RESOURCES);
     } else {
       if (irpSp->MajorFunction == IRP_MJ_CLEANUP) {
+        if (DokanXpDeferTimedOutIfBusy(irpEntry,
+                                       STATUS_INSUFFICIENT_RESOURCES)) {
+          continue;
+        }
         DokanExecuteCleanup(&irpEntry->RequestContext);
       }
       irp->IoStatus.Information = 0;

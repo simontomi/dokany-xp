@@ -123,6 +123,7 @@ VOID DispatchCreate(PDOKAN_IO_EVENT IoEvent) {
 
   CreateDispatchCommon(IoEvent, 0, /*UseExtraMemoryPool=*/FALSE,
                        /*ClearNonPoolBuffer=*/TRUE);
+  IoEvent->XpCacheable = FALSE;
 
   assert(IoEvent->DokanOpenInfo == NULL);
 
@@ -326,6 +327,21 @@ VOID DispatchCreate(PDOKAN_IO_EVENT IoEvent) {
 
     if (IoEvent->DokanFileInfo.IsDirectory)
       IoEvent->EventResult->Operation.Create.Flags |= DOKAN_FILE_DIRECTORY;
+
+#ifdef DOKAN_XP_COMPAT
+    // XP port: the file system marked the open cacheable (DokanXpSetFileCache).
+    if (IoEvent->XpCacheable && !IoEvent->DokanFileInfo.IsDirectory &&
+        (IoEvent->DokanInstance->XpDriverFlags &
+         DOKAN_DRIVER_INFO_XP_READ_CACHE) &&
+        IoEvent->EventResultSize >=
+            FIELD_OFFSET(EVENT_INFORMATION, Buffer) +
+                sizeof(DOKAN_XP_CACHE_INFO)) {
+      IoEvent->EventResult->Operation.Create.Flags |= DOKAN_XP_CREATE_CACHEABLE;
+      CopyMemory(IoEvent->EventResult->Buffer, &IoEvent->XpCacheInfo,
+                 sizeof(DOKAN_XP_CACHE_INFO));
+      IoEvent->EventResult->BufferLength = sizeof(DOKAN_XP_CACHE_INFO);
+    }
+#endif
   }
 
   if (origFileName)
@@ -340,4 +356,20 @@ VOID DispatchCreate(PDOKAN_IO_EVENT IoEvent) {
            IoEvent->EventResult->Status, IoEvent->DokanOpenInfo,
            IoEvent->DokanOpenInfo ? IoEvent->DokanOpenInfo->EventId : -1,
            IoEvent->EventResult->Operation.Create.Information);
+}
+
+// XP port: the DOKAN_FILE_INFO of ZwCreateFile is the one in the IoEvent
+// (DispatchCreate passes &IoEvent->DokanFileInfo); the mark goes into the
+// create reply above.
+void DOKANAPI DokanXpSetFileCache(_In_ PDOKAN_FILE_INFO DokanFileInfo,
+                                  _In_ LONGLONG FileSize,
+                                  _In_ ULONG64 ContentId) {
+  PDOKAN_IO_EVENT ioEvent;
+  if (DokanFileInfo == NULL || FileSize < 0) {
+    return;
+  }
+  ioEvent = CONTAINING_RECORD(DokanFileInfo, DOKAN_IO_EVENT, DokanFileInfo);
+  ioEvent->XpCacheInfo.FileSize = FileSize;
+  ioEvent->XpCacheInfo.ContentId = ContentId;
+  ioEvent->XpCacheable = TRUE;
 }

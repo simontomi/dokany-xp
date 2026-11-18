@@ -119,16 +119,6 @@ Return Value:
       __leave;
     }
 
-    // make a MDL for UserBuffer that can be used later on another thread
-    // context
-    if (RequestContext->Irp->MdlAddress == NULL) {
-      status = DokanAllocateMdl(RequestContext,
-                                RequestContext->IrpSp->Parameters.Read.Length);
-      if (!NT_SUCCESS(status)) {
-        __leave;
-      }
-    }
-
     ccb = fileObject->FsContext2;
     ASSERT(ccb != NULL);
 
@@ -155,6 +145,26 @@ Return Value:
 
     if (RequestContext->Irp->Flags & IRP_NOCACHE) {
       noCache = TRUE;
+    }
+
+    // XP port: a cacheable file's read comes from the cache manager (its
+    // misses arrive here again as paging reads and go to user mode).
+    if (!isPagingIo && !noCache && fcb->XpCacheable &&
+        !(RequestContext->IrpSp->MinorFunction & IRP_MN_MDL)) {
+      status = DokanXpCachedRead(RequestContext, fcb, byteOffset, bufferLength);
+      if (status != STATUS_MORE_PROCESSING_REQUIRED) {
+        __leave;
+      }
+    }
+
+    // make a MDL for UserBuffer that can be used later on another thread
+    // context
+    if (RequestContext->Irp->MdlAddress == NULL) {
+      status = DokanAllocateMdl(RequestContext,
+                                RequestContext->IrpSp->Parameters.Read.Length);
+      if (!NT_SUCCESS(status)) {
+        __leave;
+      }
     }
 
     if (!isPagingIo && (fileObject->SectionObjectPointer != NULL) &&

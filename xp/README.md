@@ -83,6 +83,101 @@ WDK 7.1 headers hide, is read through a structure with the same layout.
   `xp\tools\c89hoist.py` moved about 200 of them (declaration up, assignment
   where it was).
 
+## Additions that upstream does not have (2026-11-18)
+
+Both keep the upstream behaviour unless the library and the driver of this
+port meet: the library asks for them with new `EVENT_START` flags, the driver
+answers with new `EVENT_DRIVER_INFO` flags (high bits, `sys\public.h`), and
+neither side changes anything for a partner that does not know them.
+
+- **Short pulls.** Without IPC batching the library pulls one request at a
+  time, but upstream always asks `FSCTL_EVENT_PROCESS_N_PULL` (a
+  `METHOD_BUFFERED` ioctl) for 128 KiB, so the I/O manager allocates and frees
+  a 128 KiB system buffer per request. The library now asks for 32 KiB
+  (`EVENT_CONTEXT_MAX_SIZE`: the driver refuses larger requests, large writes
+  fetch their data with `FSCTL_EVENT_WRITE`), and with this port's driver for
+  3.5 KiB (or the size of the reply it sends): when the next request does not
+  fit, the driver answers `STATUS_BUFFER_OVERFLOW` with the length it needs
+  and keeps the request; the library pulls again with the whole buffer. On a
+  Core 2 Duo with Vista the buffered ioctl costs 6.8 us with 3.5 KiB, 11.2 us
+  with 32 KiB and 19.3 us with 128 KiB.
+- **Kernel read cache** (`DOKAN_OPTION_XP_READ_CACHE`, `sys\xp_cache.c`).
+  Upstream never sets up the cache manager (every read goes to user mode) and
+  purges every section of a file at each cleanup. With the option, a file
+  system marks an open cacheable in its `ZwCreateFile` with
+  `DokanXpSetFileCache(DokanFileInfo, FileSize, ContentId)`; the create reply
+  carries the mark. A file whose opens are all marked (no write or delete
+  access) with the same size and content id is read through the Windows cache:
+  fast I/O and read IRPs copy from the system cache, and only the cache
+  manager's paging reads (misses, read-ahead) go to user mode. Its cached data
+  and image section stay when a handle closes. Caching of a file starts only
+  when it has no handle and no section (nothing of an earlier version can be
+  in memory), and ends at an open that is not marked, asks for write or delete
+  access or reports another size or content id (its pages, cache maps and
+  unmapped image section are dropped before that open completes),
+  at `DokanXpPurgeCache` (a new FSCTL: one path, everything below a path, or
+  everything) and at the unmount. A cached file deleted with its last handle
+  leaves the FCB table, so its name can be created again while the cache
+  manager still holds the old file object (as NTFS frees the name at the last
+  cleanup). Cached reads hold the FCB's paging I/O resource shared, not its
+  main resource (`FsRtlCopyRead` would, and the create completion of a pull
+  thread waits for that one); MDL fast reads are not offered.
+  `DokanXpReadCacheActive` tells whether the driver took the option.
+  `dokan_mirror /z` marks every read-only open (content id: last write time)
+  and purges everything when `\__xp_purge` is opened; it prints its ReadFile
+  callbacks at unmount.
+- **No pull thread waits for a busy FCB lock** (`sys\xp_defer.c`, always on,
+  with or without the read cache; `DOKAN_XP_DEFER` 0 in `sys\dokan.h` builds
+  the upstream behaviour for comparisons). A thread may hold an FCB's main
+  resource while it waits for user mode: section creation does
+  (`AcquireFileForNtCreateSection` holds it while the memory manager asks for
+  the file size with an `IRP_MJ_QUERY_INFORMATION`, or reads an image header).
+  Upstream completes every reply in the pull thread that delivers it, and the
+  create and cleanup completions take that resource. With every pull thread
+  waiting there, the request that would release it is never pulled. The
+  timeout thread would fail it after 15 s, but it cancels timed-out creates
+  through `DokanCompleteCreate` and then waits too: the volume stalls for
+  good. On XP (T43p, one CPU, 2026-11-18) `fc /b`, which maps the files it
+  compares, and five more readers of the same file stalled a mirror drive
+  within a minute, every time; before that an `fc` failed now and then with
+  "cannot open" (its mapping timed out). Now a reply whose completion takes
+  an FCB resource that another thread owns at that moment (create, cleanup,
+  set information, `FileAllInformation`), and a timed-out create or cleanup
+  in the same case, is completed by a system worker thread; the purges that
+  end a file's caching run there as well (they wait for the paging I/O
+  resource, which a cached read holds while its page fault is in user mode).
+  A size query of a cacheable file is answered from the FCB (fast I/O), so
+  mapping it needs no round trip to user mode while the resource is held.
+- **Lock debugging on 32-bit Windows.** `dokanctl /d 2` (`DOKAN_DEBUG_LOCK`)
+  printed pointers with `%I64x` and crashed 32-bit Windows (bugcheck 0x8E) at
+  its first "Stuck trying to lock" message; it prints them with `%p` now.
+
+**Status (2026-11-18): experimental; the stall of the stress test is found and
+fixed on XP.** Passed on the XP, Vista and 7 VMs (mount, reads, writes, a
+change behind the drive, delete and re-create, programs, purge, unmount,
+8 x 10 stress) and with the test battery of a .NET 3.5 file system on T61p-2 and
+T43p. The stress: 6
+parallel readers of one file, each round `fc /b` against a copy, copy out and
+compare, `dir`, `type` (started outside the
+WinRM shell, whose memory cap makes `fc` fail with "Not enough quota"):
+- Vista x64 (T61p-2, two CPUs, the build before the fix): 6 runs of 6 x 16
+  rounds on a mirror drive passed. Vista's `fc` reads into buffers; it never
+  maps the file.
+- XP (T43p, one CPU): before the fix every first run stalled within a minute,
+  and now and then an `fc` failed with "cannot open" first, as on the XP VM.
+  The cause is the cycle described under "No pull thread waits for a busy FCB
+  lock": both pull threads of the mirror and the timeout thread were waiting
+  for the FCB resource, and a fresh `fc` that held it waited in the kernel
+  for its size query (thread states; with lock debugging the waiters poll,
+  and the first lock-debug run crashed in `DokanCompleteCreate`'s lock wait,
+  see "Lock debugging on 32-bit Windows"). With the fix: 8 runs of 6 x 16 on a
+  mirror drive and 3 on the drive of a .NET 3.5 file system passed, and that
+  file system's test battery (78 checks).
+- Vista x64 (T61p-2) with the fix: 3 runs of 6 x 16 on a mirror drive and
+  the same battery (79 checks) passed.
+- The stalls of the VMs (Vista: a 64-bit thread calling `NtCancelIoFile` in a
+  loop) were not looked at again; the VMs broke for other reasons.
+
 ## XP behaviour differences found by testing
 
 - **Unmount hang.** At unmount the driver runs its event queue down

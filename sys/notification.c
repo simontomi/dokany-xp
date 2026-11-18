@@ -372,6 +372,9 @@ NTSTATUS DokanEventRelease(__in_opt PREQUEST_CONTEXT RequestContext,
   // DokanStopEventNotificationThread. TODO(drivefs-team): maybe seperate out
   // the signal to stop.
   DokanStopFcbGarbageCollectorThread(vcb);
+  // XP port: the cache manager lets go of the cached files now, not at some
+  // later trim of the system cache (their FCBs need the lookaside lists).
+  DokanXpPurgeAllForUnmount(vcb);
   ClearLongFlag(vcb->Flags, VCB_MOUNTED);
 
   if (vcb->FCBAvlNodeLookasideListInit) {

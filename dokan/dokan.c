@@ -428,6 +428,36 @@ GetEventInfoSize(__in ULONG MajorFunction, __in PEVENT_INFORMATION EventInfo) {
                         EventInfo->BufferLength);
 }
 
+// XP port: the output length of FSCTL_EVENT_PROCESS_N_PULL. The ioctl is
+// METHOD_BUFFERED, so the I/O manager allocates and frees a system buffer of
+// max(input, output) bytes for every request (measured on a Core 2 Duo with
+// Vista: 6.6 us with a 128-byte output buffer, 11.5 us with 32 KiB, 20.1 us
+// with 128 KiB). Only batching fills more than one event into the buffer. The
+// dedicated path pulls one event at a time, and the driver never queues an
+// event larger than EVENT_CONTEXT_MAX_SIZE (DokanRegisterPendingIrp refuses
+// them; a large write sends a short event and fetches its data with
+// FSCTL_EVENT_WRITE), so EVENT_CONTEXT_MAX_SIZE always fits the next event.
+// A driver that answers a short pull with STATUS_BUFFER_OVERFLOW
+// (DOKAN_DRIVER_INFO_XP_PULL_RETRY) gets a buffer that stays below one page
+// (unless the reply sent with the pull is larger anyway): most events are a
+// few hundred bytes, the rest are pulled again with the whole buffer.
+#define DOKAN_XP_PULL_SHORT_LENGTH 3584
+static DWORD PullOutputLength(PDOKAN_INSTANCE DokanInstance,
+                              DWORD InputLength) {
+  if (DokanInstance->DokanOptions->Options & DOKAN_OPTION_ALLOW_IPC_BATCHING) {
+    return BATCH_EVENT_CONTEXT_SIZE;
+  }
+  if (DokanInstance->XpDriverFlags & DOKAN_DRIVER_INFO_XP_PULL_RETRY) {
+    if (InputLength >= EVENT_CONTEXT_MAX_SIZE) {
+      return EVENT_CONTEXT_MAX_SIZE;
+    }
+    return InputLength > DOKAN_XP_PULL_SHORT_LENGTH
+               ? InputLength
+               : DOKAN_XP_PULL_SHORT_LENGTH;
+  }
+  return EVENT_CONTEXT_MAX_SIZE;
+}
+
 DWORD SendAndPullEventInformation(PDOKAN_IO_EVENT IoEvent,
                                   PDOKAN_IO_BATCH IoBatch,
                                   BOOL ReleaseBatchBuffers) {
@@ -466,10 +496,20 @@ DWORD SendAndPullEventInformation(PDOKAN_IO_EVENT IoEvent,
           inputBuffer,                    // Input Buffer to driver.
           eventInfoSize,                  // Length of input buffer in bytes.
           &IoBatch->EventContext[0],      // Output Buffer from driver.
-          BATCH_EVENT_CONTEXT_SIZE,       // Length of output buffer in bytes.
+          PullOutputLength(IoBatch->DokanInstance,
+                           eventInfoSize), // Length of output buffer in bytes.
           &IoBatch->NumberOfBytesTransferred, // Bytes placed in buffer.
           NULL                                // asynchronous call
-          )) {
+          ) &&
+      !(GetLastError() == ERROR_MORE_DATA &&
+        (IoBatch->DokanInstance->XpDriverFlags &
+         DOKAN_DRIVER_INFO_XP_PULL_RETRY) &&
+        // XP port: the next event did not fit. The driver took the result
+        // and kept the event; pull it with the whole buffer, without result.
+        DeviceIoControl(IoBatch->DokanInstance->Device,
+                        FSCTL_EVENT_PROCESS_N_PULL, NULL, 0,
+                        &IoBatch->EventContext[0], BATCH_EVENT_CONTEXT_SIZE,
+                        &IoBatch->NumberOfBytesTransferred, NULL))) {
     lastError = GetLastError();
     if (eventInfo) {
       FreeIoEventResult(eventInfo, eventResultSize, eventInfoPollAllocated);
@@ -1164,6 +1204,13 @@ int DokanStart(_In_ PDOKAN_INSTANCE DokanInstance) {
   if (DokanInstance->DokanOptions->Options & DOKAN_OPTION_ALLOW_IPC_BATCHING) {
     eventStart.Flags |= DOKAN_EVENT_ALLOW_IPC_BATCHING;
   }
+#ifdef DOKAN_XP_COMPAT
+  if (DokanInstance->DokanOptions->Options & DOKAN_OPTION_XP_READ_CACHE) {
+    eventStart.Flags |= DOKAN_EVENT_XP_READ_CACHE;
+  }
+  // This library retries a pull that is too short (SendAndPullEventInformation).
+  eventStart.Flags |= DOKAN_EVENT_XP_PULL_RETRY;
+#endif
   if (driverLetter && mountManager &&
       !CheckDriveLetterAvailability(DokanInstance->MountPoint[0])) {
     eventStart.Flags |= DOKAN_EVENT_DRIVE_LETTER_IN_USE;
@@ -1222,6 +1269,7 @@ int DokanStart(_In_ PDOKAN_INSTANCE DokanInstance) {
   }
   DokanInstance->MountId = driverInfo->MountId;
   DokanInstance->DeviceNumber = driverInfo->DeviceNumber;
+  DokanInstance->XpDriverFlags = driverInfo->Flags;
   wcscpy_s(DokanInstance->DeviceName,
            sizeof(DokanInstance->DeviceName) / sizeof(WCHAR),
            driverInfo->DeviceName);
@@ -1581,4 +1629,48 @@ BOOL DOKANAPI DokanNotifyRename(_In_ DOKAN_HANDLE DokanInstance,
       IsDirectory ? FILE_NOTIFY_CHANGE_DIR_NAME : FILE_NOTIFY_CHANGE_FILE_NAME,
       IsInSameDirectory ? FILE_ACTION_RENAMED_NEW_NAME : FILE_ACTION_ADDED);
   return success;
+}
+
+// XP port: read caching (see DOKAN_OPTION_XP_READ_CACHE).
+
+BOOL DOKANAPI DokanXpReadCacheActive(_In_ DOKAN_HANDLE DokanInstance) {
+  DOKAN_INSTANCE *instance = (DOKAN_INSTANCE *)DokanInstance;
+  return instance != NULL &&
+         (instance->XpDriverFlags & DOKAN_DRIVER_INFO_XP_READ_CACHE) != 0;
+}
+
+BOOL DOKANAPI DokanXpPurgeCache(_In_ DOKAN_HANDLE DokanInstance,
+                                _In_opt_ LPCWSTR FilePath,
+                                _Out_opt_ PULONG Purged) {
+  DOKAN_INSTANCE *instance = (DOKAN_INSTANCE *)DokanInstance;
+  size_t length = 0;
+  ULONG purged = 0;
+  ULONG returnedLength = 0;
+  if (Purged) {
+    *Purged = 0;
+  }
+  if (!DokanXpReadCacheActive(DokanInstance) || !instance->Device ||
+      instance->Device == INVALID_HANDLE_VALUE) {
+    return FALSE;
+  }
+  if (FilePath != NULL) {
+    if (FilePath[0] != L'\0' && FilePath[1] == L':') {
+      FilePath += 2;
+    }
+    length = wcslen(FilePath);
+    if (length > 32767) {
+      return FALSE;
+    }
+  }
+  if (!DeviceIoControl(instance->Device, FSCTL_XP_PURGE_CACHE,
+                       length ? (LPVOID)FilePath : NULL,
+                       (DWORD)(length * sizeof(WCHAR)), &purged,
+                       sizeof(purged), &returnedLength, NULL)) {
+    DbgPrint("Dokan Error: purge cache failed with %d\n", GetLastError());
+    return FALSE;
+  }
+  if (Purged && returnedLength >= sizeof(ULONG)) {
+    *Purged = purged;
+  }
+  return TRUE;
 }

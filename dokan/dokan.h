@@ -131,6 +131,13 @@ extern "C" {
  * and userland filesystem taking time to process requests (like remote storage).
  */
 #define DOKAN_OPTION_ALLOW_IPC_BATCHING (1 << 12)
+/**
+ * XP port only: let the Windows cache manager serve the reads of the files
+ * whose open the file system marks cacheable with \ref DokanXpSetFileCache.
+ * Use \ref DokanXpReadCacheActive to see whether the driver took it, and
+ * \ref DokanXpPurgeCache when the content of a cacheable path changes.
+ */
+#define DOKAN_OPTION_XP_READ_CACHE (1 << 24)
 
 /** @} */
 
@@ -1115,6 +1122,45 @@ BOOL DOKANAPI DokanNotifyRename(_In_ DOKAN_HANDLE DokanInstance,
                                 _In_ LPCWSTR OldPath, _In_ LPCWSTR NewPath,
                                 _In_ BOOL IsDirectory,
                                 _In_ BOOL IsInSameDirectory);
+
+/**
+ * \brief XP port: marks the open being created as cacheable.
+ *
+ * Call it from ZwCreateFile, before returning success, for an open whose
+ * content will not change while the mark holds. With
+ * \ref DOKAN_OPTION_XP_READ_CACHE the cache manager may then serve its reads
+ * (and those of later opens with the same size and content id) without
+ * calling ReadFile. An open that asks for write or delete access is never
+ * cached, whatever this says.
+ *
+ * \param DokanFileInfo The DOKAN_FILE_INFO ZwCreateFile was given.
+ * \param FileSize The size GetFileInformation reports for the file.
+ * \param ContentId A value that changes whenever the content served for the
+ *  path changes (a version or a last write time).
+ */
+void DOKANAPI DokanXpSetFileCache(_In_ PDOKAN_FILE_INFO DokanFileInfo,
+                                  _In_ LONGLONG FileSize,
+                                  _In_ ULONG64 ContentId);
+
+/**
+ * \brief XP port: drops what the cache manager holds for files of the mount.
+ *
+ * \param DokanInstance The dokan mount context created by \ref DokanCreateFileSystem .
+ * \param FilePath The file, as the callbacks see it (L"\\Games\\a.exe"); a
+ *  path that ends with a backslash means every file below it; NULL or L""
+ *  means every file. A leading drive letter and colon are ignored.
+ * \param Purged Optional: how many files had cached data dropped.
+ * \return \c TRUE if the driver handled the request.
+ */
+BOOL DOKANAPI DokanXpPurgeCache(_In_ DOKAN_HANDLE DokanInstance,
+                                _In_opt_ LPCWSTR FilePath,
+                                _Out_opt_ PULONG Purged);
+
+/**
+ * \brief XP port: whether the driver mounted with read caching
+ *  (\ref DOKAN_OPTION_XP_READ_CACHE given and supported).
+ */
+BOOL DOKANAPI DokanXpReadCacheActive(_In_ DOKAN_HANDLE DokanInstance);
 
 /**@}*/
 

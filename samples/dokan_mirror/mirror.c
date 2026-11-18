@@ -49,6 +49,13 @@ BOOL g_DebugMode;
 BOOL g_CaseSensitive;
 BOOL g_HasSeSecurityPrivilege;
 BOOL g_ImpersonateCallerUser;
+BOOL g_XpReadCache; // XP port: /z
+// XP port: the mount, for DokanXpPurgeCache (an open of \__xp_purge purges
+// every cached file; a test hook of this sample).
+static volatile DOKAN_HANDLE g_DokanInstance = NULL;
+// XP port: ReadFile callbacks, printed at unmount (the cache tests compare).
+static volatile LONG g_ReadCalls = 0;
+static volatile LONG g_PagingReadCalls = 0;
 
 static void DbgPrint(LPCWSTR format, ...) {
   if (g_DebugMode) {
@@ -209,6 +216,17 @@ MirrorCreateFile(LPCWSTR FileName, PDOKAN_IO_SECURITY_CONTEXT SecurityContext,
   ACCESS_MASK genericDesiredAccess;
   // userTokenHandle is for Impersonate Caller User Option
   HANDLE userTokenHandle = INVALID_HANDLE_VALUE;
+
+#ifdef DOKAN_XP_COMPAT
+  if (g_XpReadCache && _wcsicmp(FileName, L"\\__xp_purge") == 0) {
+    ULONG purged = 0;
+    BOOL done = g_DokanInstance != NULL &&
+                DokanXpPurgeCache(g_DokanInstance, NULL, &purged);
+    fwprintf(stderr, L"XP purge: %ls, %lu files\n", done ? L"done" : L"failed",
+             purged);
+    return STATUS_OBJECT_NAME_NOT_FOUND;
+  }
+#endif
 
   securityAttrib.nLength = sizeof(securityAttrib);
   securityAttrib.lpSecurityDescriptor =
@@ -402,6 +420,12 @@ MirrorCreateFile(LPCWSTR FileName, PDOKAN_IO_SECURITY_CONTEXT SecurityContext,
       if (handle == INVALID_HANDLE_VALUE) {
         error = GetLastError();
         DbgPrint(L"\terror code = %d\n\n", error);
+#ifdef DOKAN_XP_COMPAT
+        if (g_XpReadCache) {
+          fwprintf(stderr, L"XP: CreateFile folder %ls (access 0x%x share 0x%x) failed: %lu\n",
+                   filePath, genericDesiredAccess, ShareAccess, error);
+        }
+#endif
 
         status = DokanNtStatusFromWin32(error);
       } else {
@@ -466,6 +490,12 @@ MirrorCreateFile(LPCWSTR FileName, PDOKAN_IO_SECURITY_CONTEXT SecurityContext,
     if (handle == INVALID_HANDLE_VALUE) {
       error = GetLastError();
       DbgPrint(L"\terror code = %d\n\n", error);
+#ifdef DOKAN_XP_COMPAT
+      if (g_XpReadCache) {
+        fwprintf(stderr, L"XP: CreateFile %ls (access 0x%x share 0x%x) failed: %lu\n",
+                 filePath, genericDesiredAccess, ShareAccess, error);
+      }
+#endif
 
       status = DokanNtStatusFromWin32(error);
     } else {
@@ -478,6 +508,24 @@ MirrorCreateFile(LPCWSTR FileName, PDOKAN_IO_SECURITY_CONTEXT SecurityContext,
 
       DokanFileInfo->Context =
         (ULONG64)handle; // save the file handle in Context
+
+#ifdef DOKAN_XP_COMPAT
+      // XP port, /z: a read-only open may be served by the kernel read cache;
+      // the content id is the last write time (another one ends the caching).
+      if (g_XpReadCache &&
+          !(genericDesiredAccess & (GENERIC_WRITE | GENERIC_ALL |
+                                    FILE_WRITE_DATA | FILE_APPEND_DATA |
+                                    DELETE | MAXIMUM_ALLOWED))) {
+        LARGE_INTEGER size;
+        FILETIME written;
+        if (GetFileSizeEx(handle, &size) &&
+            GetFileTime(handle, NULL, NULL, &written)) {
+          DokanXpSetFileCache(DokanFileInfo, size.QuadPart,
+                              ((ULONG64)written.dwHighDateTime << 32) |
+                                  written.dwLowDateTime);
+        }
+      }
+#endif
 
       if (creationDisposition == OPEN_ALWAYS ||
           creationDisposition == CREATE_ALWAYS) {
@@ -561,6 +609,12 @@ static NTSTATUS DOKAN_CALLBACK MirrorReadFile(LPCWSTR FileName, LPVOID Buffer,
   GetFilePath(filePath, DOKAN_MAX_PATH, FileName);
 
   DbgPrint(L"ReadFile : %s\n", filePath);
+#ifdef DOKAN_XP_COMPAT
+  InterlockedIncrement(&g_ReadCalls);
+  if (DokanFileInfo->PagingIo) {
+    InterlockedIncrement(&g_PagingReadCalls);
+  }
+#endif
 
   if (!handle || handle == INVALID_HANDLE_VALUE) {
     DbgPrint(L"\tinvalid handle, cleanuped?\n");
@@ -569,6 +623,12 @@ static NTSTATUS DOKAN_CALLBACK MirrorReadFile(LPCWSTR FileName, LPVOID Buffer,
     if (handle == INVALID_HANDLE_VALUE) {
       DWORD error = GetLastError();
       DbgPrint(L"\tCreateFile error : %d\n\n", error);
+#ifdef DOKAN_XP_COMPAT
+      if (g_XpReadCache) {
+        fwprintf(stderr, L"XP: reopen for ReadFile %ls failed: %lu\n", filePath,
+                 error);
+      }
+#endif
       return DokanNtStatusFromWin32(error);
     }
     opened = TRUE;
@@ -581,6 +641,11 @@ static NTSTATUS DOKAN_CALLBACK MirrorReadFile(LPCWSTR FileName, LPVOID Buffer,
     DWORD error = GetLastError();
     DbgPrint(L"\tread error = %u, buffer length = %d, read length = %d\n\n",
              error, BufferLength, *ReadLength);
+#ifdef DOKAN_XP_COMPAT
+    if (g_XpReadCache) {
+      fwprintf(stderr, L"XP: ReadFile %ls failed: %lu\n", filePath, error);
+    }
+#endif
     if (opened)
       CloseHandle(handle);
     return DokanNtStatusFromWin32(error);
@@ -815,6 +880,11 @@ MirrorFindFiles(LPCWSTR FileName,
   if (hFind == INVALID_HANDLE_VALUE) {
     error = GetLastError();
     DbgPrint(L"\tinvalid file handle. Error is %u\n\n", error);
+#ifdef DOKAN_XP_COMPAT
+    if (g_XpReadCache) {
+      fwprintf(stderr, L"XP: FindFirstFile %ls failed: %lu\n", filePath, error);
+    }
+#endif
     return DokanNtStatusFromWin32(error);
   }
 
@@ -832,6 +902,11 @@ MirrorFindFiles(LPCWSTR FileName,
 
   if (error != ERROR_NO_MORE_FILES) {
     DbgPrint(L"\tFindNextFile error. Error is %u\n\n", error);
+#ifdef DOKAN_XP_COMPAT
+    if (g_XpReadCache) {
+      fwprintf(stderr, L"XP: FindNextFile %ls failed: %lu\n", filePath, error);
+    }
+#endif
     return DokanNtStatusFromWin32(error);
   }
 
@@ -1511,6 +1586,10 @@ static NTSTATUS DOKAN_CALLBACK MirrorUnmounted(PDOKAN_FILE_INFO DokanFileInfo) {
   UNREFERENCED_PARAMETER(DokanFileInfo);
 
   DbgPrint(L"Unmounted\n");
+#ifdef DOKAN_XP_COMPAT
+  fprintf(stderr, "ReadFile calls: %ld (paging: %ld)\n", g_ReadCalls,
+          g_PagingReadCalls);
+#endif
   return STATUS_SUCCESS;
 }
 
@@ -1553,7 +1632,11 @@ void ShowUsage() {
           "  /i Timeout in Milliseconds (ex. /i 30000)\t Timeout until a running operation is aborted and the device is unmounted.\n"
           "  /x Network unmount\t\t\t\t Allows unmounting network drive from file explorer.\n"
           "  /e Enable Driver Logs\t\t\t\t Forward Driver logs to userland.\n"
-          "  /v Volume name\t\t\t\t Personalize the volume name.\n\n"
+          "  /v Volume name\t\t\t\t Personalize the volume name.\n"
+#ifdef DOKAN_XP_COMPAT
+          "  /z Kernel read cache (XP port)\t\t Let the Windows cache serve reads of files opened for reading.\n"
+#endif
+          "\n"
           "Examples:\n"
           "\tmirror.exe /r C:\\Users /l M:\t\t\t# Mirror C:\\Users as RootDirectory into a drive of letter M:\\.\n"
           "\tmirror.exe /r C:\\Users /l C:\\mount\\dokan\t# Mirror C:\\Users as RootDirectory into NTFS folder C:\\mount\\dokan.\n"
@@ -1671,6 +1754,12 @@ int __cdecl wmain(ULONG argc, PWCHAR argv[]) {
       CHECK_CMD_ARG(command, argc)
       dokanOptions.SectorSize = (ULONG)_wtol(argv[command]);
       break;
+#ifdef DOKAN_XP_COMPAT
+    case L'z':
+      dokanOptions.Options |= DOKAN_OPTION_XP_READ_CACHE;
+      g_XpReadCache = TRUE;
+      break;
+#endif
     default:
       fwprintf(stderr, L"unknown command: %ls\n", argv[command]);
       return EXIT_FAILURE;
@@ -1769,7 +1858,25 @@ int __cdecl wmain(ULONG argc, PWCHAR argv[]) {
   dokanOperations.Mounted = MirrorMounted;
 
   DokanInit();
+#ifdef DOKAN_XP_COMPAT
+  // XP port: DokanMain without hiding the handle (/z purges through it).
+  {
+    DOKAN_HANDLE instance = NULL;
+    status = DokanCreateFileSystem(&dokanOptions, &dokanOperations, &instance);
+    if (status == DOKAN_SUCCESS) {
+      g_DokanInstance = instance;
+      if (g_XpReadCache) {
+        fprintf(stderr, "Kernel read cache: %s\n",
+                DokanXpReadCacheActive(instance) ? "on" : "off");
+      }
+      DokanWaitForFileSystemClosed(instance, INFINITE);
+      g_DokanInstance = NULL;
+      DokanCloseHandle(instance);
+    }
+  }
+#else
   status = DokanMain(&dokanOptions, &dokanOperations);
+#endif
   DokanShutdown();
   switch (status) {
   case DOKAN_SUCCESS:

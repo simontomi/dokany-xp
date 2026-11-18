@@ -181,11 +181,17 @@ Return Value:
   if (isUnmountPending || fcb->BlockUserModeDispatch) {
     // Request will not reach Userland and therefore `DokanCompleteCleanup`
     // will not run, releasing the resources now.
+    // XP port: a cache map of the file object ends at cleanup in any case.
+    DokanXpCleanupCache(RequestContext, fcb, fileObject);
     DokanExecuteCleanup(RequestContext);
     return STATUS_SUCCESS;
   }
 
-  FlushFcb(RequestContext, fcb, fileObject);
+  // XP port: a cacheable file keeps its cached data (and image section) when
+  // a handle closes; every other file is flushed and purged as before.
+  if (!DokanXpCleanupCache(RequestContext, fcb, fileObject)) {
+    FlushFcb(RequestContext, fcb, fileObject);
+  }
 
   DokanFCBLockRW(fcb);
 
@@ -216,10 +222,20 @@ Return Value:
 
 VOID DokanCompleteCleanup(__in PREQUEST_CONTEXT RequestContext,
                           __in PEVENT_INFORMATION EventInfo) {
+  PDokanCCB ccb;
   DOKAN_LOG_FINE_IRP(RequestContext, "FileObject=%p",
                      RequestContext->IrpSp->FileObject);
 
   DokanExecuteCleanup(RequestContext);
 
   RequestContext->Irp->IoStatus.Status = EventInfo->Status;
+
+  // XP port: the last handle of a deleted file that was cached frees its name
+  // (xp_cache.c).
+  ccb = RequestContext->IrpSp->FileObject != NULL
+            ? RequestContext->IrpSp->FileObject->FsContext2
+            : NULL;
+  if (ccb != NULL && ccb->Fcb != NULL && RequestContext->Vcb != NULL) {
+    DokanXpForgetDeletedFcb(RequestContext, ccb->Fcb);
+  }
 }

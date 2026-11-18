@@ -6,6 +6,30 @@
 > but did not write the code. Build steps, what changed and the test results:
 > [xp/README.md](xp/README.md). The rest of this page is upstream Dokany's
 > README.
+>
+> **Additions over upstream (2026-11-18, also written by Claude):**
+> - *Short pulls.* Without IPC batching the library asks the driver for 3.5
+>   KiB per request instead of 128 KiB (the driver asks for a second pull when
+>   a request does not fit), which saves the I/O manager about 12 µs per
+>   request on a Core 2 Duo.
+> - *Kernel read cache* (opt-in, `DOKAN_OPTION_XP_READ_CACHE`). Files that the
+>   file system marks cacheable when they are opened (`DokanXpSetFileCache`)
+>   are read through the Windows cache manager; only cache misses and
+>   read-ahead reach user mode. `DokanXpPurgeCache` drops what is cached of a
+>   path. On a Dokany file system on Vista x64 (Core 2 Duo) a hot 512-byte read
+>   went from 66 µs to 6 µs, and a game that does about 200,000 small reads
+>   before its menu got there in 31.5 s instead of 46.3 s. Experimental.
+> - *No pull thread waits for a busy FCB lock.* A deadlock that upstream
+>   Dokany has as well: a program mapping a file (section creation holds the
+>   FCB lock while it asks user mode for the file size) while other programs
+>   open the same file could stall the drive for good, because every pull
+>   thread, and then the timeout thread, waited for that lock. On XP six
+>   parallel readers stalled a drive within a minute, every time. Such
+>   completions now run in a system worker thread.
+> - *Lock debugging* (`dokanctl /d 2`) no longer crashes 32-bit Windows.
+>
+> Details and test results: [xp/README.md](xp/README.md), "Additions that
+> upstream does not have".
 
 # Dokany
 

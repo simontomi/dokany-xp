@@ -93,6 +93,8 @@ typedef struct _DOKAN_INSTANCE {
    * Only the first incrementer thread will call it.
    */
   LONG UnmountedCalled;
+  /** XP port: EVENT_DRIVER_INFO.Flags of the mount (DOKAN_DRIVER_INFO_XP_*) */
+  ULONG XpDriverFlags;
 } DOKAN_INSTANCE, *PDOKAN_INSTANCE;
 
 /**
@@ -194,6 +196,10 @@ typedef struct _DOKAN_IO_EVENT {
    * When it is free, the EventContext of this IoEvent is no longer safe to access.
    */
   PDOKAN_IO_BATCH IoBatch;
+  /** XP port: DokanXpSetFileCache was called in this event's ZwCreateFile */
+  BOOL XpCacheable;
+  /** XP port: what DokanXpSetFileCache was given */
+  DOKAN_XP_CACHE_INFO XpCacheInfo;
 } DOKAN_IO_EVENT, *PDOKAN_IO_EVENT;
 
 #define IOEVENT_RESULT_BUFFER_SIZE(ioEvent)                                    \

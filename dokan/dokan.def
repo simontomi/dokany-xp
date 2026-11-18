@@ -35,3 +35,6 @@ DokanWaitForFileSystemClosed
 DokanRegisterWaitForFileSystemClosed
 DokanUnregisterWaitForFileSystemClosed
 DokanCloseHandle
+DokanXpSetFileCache
+DokanXpPurgeCache
+DokanXpReadCacheActive

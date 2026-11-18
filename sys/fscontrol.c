@@ -476,6 +476,26 @@ NTSTATUS PullEvents(__in PREQUEST_CONTEXT RequestContext,
     workItem =
         CONTAINING_RECORD(workItemListEntry, DRIVER_EVENT_CONTEXT, ListEntry);
     workItemBytes = workItem->EventContext.Length;
+    // XP port: without batching the library may pull with a short buffer
+    // (DOKAN_EVENT_XP_PULL_RETRY). The event keeps its place; the library is
+    // told the length it needs and pulls again (an empty answer would make it
+    // pull again with the same buffer for ever).
+    if (currentIoctlBufferBytesRemaining < workItemBytes &&
+        !RequestContext->Dcb->AllowIpcBatching &&
+        RequestContext->Dcb->XpPullRetry &&
+        RequestContext->Irp->IoStatus.Information == 0 &&
+        currentIoctlBufferBytesRemaining >= sizeof(ULONG)) {
+      InsertHeadList(&NotifyEvent->ListHead, &workItem->ListEntry);
+      *(PULONG)currentIoctlBuffer = workItemBytes;
+      RequestContext->Irp->IoStatus.Information = sizeof(ULONG);
+      if (!KeReadStateQueue(&RequestContext->Dcb->NotifyIrpEventQueue)) {
+        KeInsertQueue(&RequestContext->Dcb->NotifyIrpEventQueue,
+                      &RequestContext->Dcb->NotifyIrpEventQueueList);
+      }
+      KeReleaseSpinLock(&NotifyEvent->ListLock, workQueueIrql);
+      RequestContext->Irp->IoStatus.Status = STATUS_BUFFER_OVERFLOW;
+      return STATUS_BUFFER_OVERFLOW;
+    }
     // Buffer is not specified or short of length (this may mean we filled the
     // space in one of the DLL's buffers in batch mode). Put the IRP back in
     // the work queue; it will have to go in a different buffer.
@@ -595,6 +615,8 @@ DokanDiskUserFsRequest(__in PREQUEST_CONTEXT RequestContext) {
       return DokanResetPendingIrpTimeout(&requestContext);
     case FSCTL_GET_ACCESS_TOKEN:
       return DokanGetAccessToken(&requestContext);
+    case FSCTL_XP_PURGE_CACHE:
+      return DokanXpPurgeCacheFsctl(&requestContext);
   }
   DOKAN_LOG_FINE_IRP(
       RequestContext, "Unsupported FsControlCode %x",

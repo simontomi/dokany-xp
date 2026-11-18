@@ -309,8 +309,12 @@ VOID DokanCompleteQueryInformation(__in PREQUEST_CONTEXT RequestContext,
         fileSize = networkInfo->EndOfFile.QuadPart;
       }
 
-      InterlockedExchange64(&header->AllocationSize.QuadPart, allocationSize);
-      InterlockedExchange64(&header->FileSize.QuadPart, fileSize);
+      // XP port: the sizes of a cacheable file are the ones its cache map was
+      // set up with (DokanXpCacheOnCreate); a change ends caching there.
+      if (!fcb->XpCacheable) {
+        InterlockedExchange64(&header->AllocationSize.QuadPart, allocationSize);
+        InterlockedExchange64(&header->FileSize.QuadPart, fileSize);
+      }
 
       DOKAN_LOG_FINE_IRP(RequestContext,
                          "AllocationSize: %llu, EndOfFile: %llu",

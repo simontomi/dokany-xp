@@ -291,6 +291,13 @@ typedef struct _DokanDiskControlBlock {
   // request.
   BOOLEAN AllowIpcBatching;
 
+  // XP port (xp_cache.c): read caching for files the file system marks
+  // cacheable (DOKAN_EVENT_XP_READ_CACHE).
+  BOOLEAN XpReadCache;
+  // XP port: the library retries a pull that is too short for the next event
+  // (DOKAN_EVENT_XP_PULL_RETRY).
+  BOOLEAN XpPullRetry;
+
   // How often to garbage-collect FCBs. If this is 0, we use the historical
   // default behavior of freeing them on the spot and in the current context
   // when the OpenCount reaches 0. If this is nonzero, then a background thread
@@ -558,6 +565,20 @@ typedef struct _DokanFileControlBlock {
   // but due to a Dokan bug, this is actually possible. Until it is fixed, we
   // reproduce the behavior prior to the Avl table.
   BOOLEAN ReplacedByRename;
+
+  // XP port (xp_cache.c), only with DCB XpReadCache. TRUE while reads of the
+  // file may be served by the cache manager: every open since the file had no
+  // handle and no section was marked cacheable by the file system, with the
+  // same size and content id. Set under the FCB lock (exclusive); read by the
+  // cached read paths under the paging I/O lock (shared). Cleared by a
+  // non-cacheable open, another size or content id, a purge from user mode and
+  // the unmount.
+  BOOLEAN XpCacheable;
+  // TRUE once a cache map was initialized for a file object of this FCB (the
+  // unmount purges these).
+  BOOLEAN XpEverCached;
+  // The DOKAN_XP_CACHE_INFO.ContentId the cached data belongs to.
+  ULONG64 XpContentId;
 } DokanFCB, *PDokanFCB;
 
 #define DokanResourceLockRO(resource)                                          \
@@ -1287,5 +1308,99 @@ void OplockDebugRecordCreateRequest(__in PDokanFCB Fcb,
 
 // Logs an atomic oplock request within a create operation.
 void OplockDebugRecordAtomicRequest(__in PDokanFCB Fcb);
+
+// XP port: read caching through the cache manager (xp_cache.c).
+
+// The cache manager callbacks of a cached file (DokanEventStart).
+VOID DokanXpInitCacheCallbacks(__in PDokanDCB Dcb);
+
+// A successful create reply (DokanCompleteCreate, FCB locked exclusively,
+// before UncleanCount counts the new handle): enables, keeps or disables
+// caching of the file. Returns TRUE when caching ended: the caller then calls
+// DokanXpPurgeEndedCache once the FCB is unlocked.
+BOOLEAN DokanXpCacheOnCreate(__in PREQUEST_CONTEXT RequestContext,
+                             __in PDokanFCB Fcb,
+                             __in PEVENT_INFORMATION EventInfo);
+
+// Drops the pages, cache maps and unmapped image section of a file whose
+// caching just ended. No FCB lock may be held.
+VOID DokanXpPurgeEndedCache(__in PDokanFCB Fcb);
+
+// Serves a non-paging cached read from the cache manager. Returns
+// STATUS_MORE_PROCESSING_REQUIRED when the read must go to user mode as
+// before; any other status completes the IRP (Information set).
+NTSTATUS DokanXpCachedRead(__in PREQUEST_CONTEXT RequestContext,
+                           __in PDokanFCB Fcb, __in LARGE_INTEGER ByteOffset,
+                           __in ULONG Length);
+
+// IRP_MJ_CLEANUP (dispatch thread): ends the file object's cache map. Returns
+// TRUE for a cacheable file (its cached data stays), FALSE when the caller
+// must flush and purge as before (FlushFcb).
+BOOLEAN DokanXpCleanupCache(__in PREQUEST_CONTEXT RequestContext,
+                            __in PDokanFCB Fcb,
+                            __in PFILE_OBJECT FileObject);
+
+// The completion of a cleanup (pull thread, no lock held): a cached file that
+// was deleted with its last handle leaves the FCB table, so the name can be
+// opened (created) again while the cache manager still holds the old FCB's
+// file object (as NTFS frees the name at the last cleanup).
+VOID DokanXpForgetDeletedFcb(__in PREQUEST_CONTEXT RequestContext,
+                             __in PDokanFCB Fcb);
+
+// FSCTL_XP_PURGE_CACHE on the disk device.
+NTSTATUS DokanXpPurgeCacheFsctl(__in PREQUEST_CONTEXT RequestContext);
+
+// DokanEventRelease: drops the cached data of every file that was cached, so
+// the cache manager closes its file objects.
+VOID DokanXpPurgeAllForUnmount(__in PDokanVCB Vcb);
+
+FAST_IO_READ DokanXpFastIoRead;
+BOOLEAN DokanXpFastIoCheckIfPossible(__in PFILE_OBJECT FileObject,
+                                     __in PLARGE_INTEGER FileOffset,
+                                     __in ULONG Length, __in BOOLEAN Wait,
+                                     __in ULONG LockKey,
+                                     __in BOOLEAN CheckForReadOperation);
+
+// 1: the fixes of xp_defer.c and the fast size query of a cacheable file.
+// 0 builds the behaviour before them, for a comparison run on a test PC.
+#ifndef DOKAN_XP_DEFER
+#define DOKAN_XP_DEFER 1
+#endif
+
+// The sizes of a cacheable file from its FCB (FsRtlGetFileSize of the memory
+// manager while it creates a section); FALSE for any other file.
+FAST_IO_QUERY_STANDARD_INFO DokanXpFastIoQueryStandardInfo;
+
+// The purge of DokanXpForgetDeletedFcb (paging I/O resource exclusively).
+VOID DokanXpPurgeForgotten(__in PDokanFCB Fcb);
+
+// The completion of one reply (event.c).
+void DokanDispatchCompletion(__in PDEVICE_OBJECT DeviceObject,
+                             __in PIRP_ENTRY irpEntry,
+                             __in PEVENT_INFORMATION eventInfo);
+
+// XP port: completions that would wait for a busy FCB lock run in a system
+// worker thread, never in a pull thread or the timeout thread (xp_defer.c).
+
+// A reply whose completion takes the FCB resource that another thread owns
+// now: a worker thread completes it (DokanDispatchCompletion) and frees the
+// IRP entry. Returns TRUE when it went there; FALSE: complete it as before.
+BOOLEAN DokanXpDeferCompletionIfBusy(__in PIRP_ENTRY IrpEntry,
+                                     __in PEVENT_INFORMATION EventInfo,
+                                     __in ULONG EventInfoLength);
+
+// The same for a timed-out create (cancelled with CreateStatus) or cleanup
+// (fails with STATUS_INSUFFICIENT_RESOURCES) of the timeout thread.
+BOOLEAN DokanXpDeferTimedOutIfBusy(__in PIRP_ENTRY IrpEntry,
+                                   __in NTSTATUS CreateStatus);
+
+// DokanCompleteCreate when caching ended (FCB unlocked): a worker thread
+// purges, then completes the IRP (RequestContext->DoNotComplete is set).
+VOID DokanXpPurgeEndedCacheThenComplete(__in PREQUEST_CONTEXT RequestContext,
+                                        __in PDokanFCB Fcb);
+
+// DokanXpPurgeForgotten in a worker thread, then DokanFreeFCB (gives back the
+// OpenCount reference the caller took).
+VOID DokanXpPurgeForgottenLater(__in PDokanVCB Vcb, __in PDokanFCB Fcb);
 
 #endif // DOKAN_H_

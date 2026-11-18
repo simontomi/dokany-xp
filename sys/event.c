@@ -579,6 +579,13 @@ DokanCompleteIrp(__in PREQUEST_CONTEXT RequestContext) {
       eventInfoSize = GetEventInfoSize(
           irpEntry->RequestContext.IrpSp->MajorFunction,
                                        eventInfo);
+      // XP port: a pull thread never waits for a busy FCB lock (xp_defer.c);
+      // the worker thread that completes the reply frees the IRP entry.
+      if (DokanXpDeferCompletionIfBusy(irpEntry, eventInfo, eventInfoSize)) {
+        offset += eventInfoSize;
+        irpEntry = NULL;
+        continue;
+      }
       DokanDispatchCompletion(RequestContext->DeviceObject, irpEntry, eventInfo);
       offset += eventInfoSize;
     }
@@ -964,6 +971,9 @@ DokanEventStart(__in PREQUEST_CONTEXT RequestContext) {
       (eventStart->Flags & DOKAN_EVENT_DISPATCH_DRIVER_LOGS) != 0;
   dcb->AllowIpcBatching =
       (eventStart->Flags & DOKAN_EVENT_ALLOW_IPC_BATCHING) != 0;
+  dcb->XpReadCache = (eventStart->Flags & DOKAN_EVENT_XP_READ_CACHE) != 0;
+  dcb->XpPullRetry = (eventStart->Flags & DOKAN_EVENT_XP_PULL_RETRY) != 0;
+  DokanXpInitCacheCallbacks(dcb);
   isMountPointDriveLetter = IsMountPointDriveLetter(dcb->MountPoint);
 
   if (dcb->DispatchDriverLogs) {
@@ -1172,6 +1182,17 @@ DokanEventStart(__in PREQUEST_CONTEXT RequestContext) {
     DokanEventRelease(RequestContext, volumeDeviceObject);
     driverInfo->DeviceNumber = 0;
     driverInfo->MountId = 0;
+  }
+  // XP port: what this mount does of the XP additions (only on success: the
+  // library compares the failure flags with ==).
+  if (driverInfo->Status == DOKAN_MOUNTED &&
+      !(driverInfo->Flags & DOKAN_DRIVER_INFO_NO_MOUNT_POINT_ASSIGNED)) {
+    if (dcb->XpReadCache) {
+      driverInfo->Flags |= DOKAN_DRIVER_INFO_XP_READ_CACHE;
+    }
+    if (dcb->XpPullRetry) {
+      driverInfo->Flags |= DOKAN_DRIVER_INFO_XP_PULL_RETRY;
+    }
   }
 
   DokanLogInfo(&logger, L"Finished event start with status %d and flags: %I32x",

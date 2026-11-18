@@ -1310,6 +1310,7 @@ VOID DokanCompleteCreate(__in PREQUEST_CONTEXT RequestContext,
   ULONG options;
   PDokanCCB ccb = NULL;
   PDokanFCB fcb = NULL;
+  BOOLEAN xpEndedCache = FALSE;
 
 
   ccb = RequestContext->IrpSp->FileObject->FsContext2;
@@ -1366,6 +1367,8 @@ VOID DokanCompleteCreate(__in PREQUEST_CONTEXT RequestContext,
           "FILE_DELETE_ON_CLOSE is set so remember for delete in cleanup");
     }
 
+    // XP port: read caching (before UncleanCount counts this handle).
+    xpEndedCache = DokanXpCacheOnCreate(RequestContext, fcb, EventInfo);
     InterlockedIncrement(&fcb->UncleanCount);
     if (RequestContext->Irp->IoStatus.Information == FILE_CREATED) {
       if (DokanFCBFlagsIsSet(fcb, DOKAN_FILE_DIRECTORY)) {
@@ -1388,6 +1391,17 @@ VOID DokanCompleteCreate(__in PREQUEST_CONTEXT RequestContext,
     RequestContext->IrpSp->FileObject->FsContext2 = NULL;
   }
 
-  if (fcb)
+  if (fcb) {
     DokanFCBUnlock(fcb);
+    // XP port: caching ended (another version, or a writer): the pages and
+    // the image section of the cached version must not serve this open (a
+    // mapping reuses the data section). Before the IRP completes, so the
+    // opener cannot map the old pages; without the FCB lock (lock order),
+    // and in a worker thread, which then completes the IRP: this is a pull
+    // thread (or the timeout thread), and the purge waits for the paging I/O
+    // resource that a cached read holds while its page fault is in user mode.
+    if (xpEndedCache) {
+      DokanXpPurgeEndedCacheThenComplete(RequestContext, fcb);
+    }
+  }
 }
